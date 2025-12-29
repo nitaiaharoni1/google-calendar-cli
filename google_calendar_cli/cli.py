@@ -629,14 +629,15 @@ def get_calendar(ctx, calendar_id, account):
 @click.argument("summary")
 @click.option("--description", "-d", help="Calendar description")
 @click.option("--timezone", "-t", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.option("--color", help="Calendar color ID (use 'colors' command to see available colors)")
 @click.pass_context
 @_account_option
-def create_calendar(ctx, summary, description, timezone, account):
+def create_calendar(ctx, summary, description, timezone, color, account):
     """Create a new calendar."""
     account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
-        calendar = api.create_calendar(summary, description=description, timezone=timezone)
+        calendar = api.create_calendar(summary, description=description, timezone=timezone, color_id=color)
         click.echo(f"✅ Calendar created successfully!")
         click.echo(f"   ID: {calendar.get('id')}")
         click.echo(f"   Name: {calendar.get('summary')}")
@@ -650,14 +651,15 @@ def create_calendar(ctx, summary, description, timezone, account):
 @click.option("--summary", "-s", help="New calendar name")
 @click.option("--description", "-d", help="New description")
 @click.option("--timezone", "-t", help="New timezone")
+@click.option("--color", help="Calendar color ID (use 'colors' command, empty string to remove)")
 @click.pass_context
 @_account_option
-def update_calendar(ctx, calendar_id, summary, description, timezone, account):
+def update_calendar(ctx, calendar_id, summary, description, timezone, color, account):
     """Update calendar metadata."""
     account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
-        calendar = api.update_calendar(calendar_id, summary=summary, description=description, timezone=timezone)
+        calendar = api.update_calendar(calendar_id, summary=summary, description=description, timezone=timezone, color_id=color)
         click.echo(f"✅ Calendar updated successfully!")
         click.echo(f"   ID: {calendar.get('id')}")
         click.echo(f"   Name: {calendar.get('summary')}")
@@ -727,6 +729,90 @@ def colors(ctx, account):
                 foreground = color_info.get("foreground", "N/A")
                 click.echo(f"   {color_id}: bg={background}, fg={foreground}")
     
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.argument("emails", nargs=-1, required=True)
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
+@_account_option
+@click.pass_context
+def add_attendees(ctx, event_id, emails, calendar, send_updates, account):
+    """Add attendees to an event."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.add_attendees(event_id, list(emails), calendar_id=calendar, send_updates=send_updates)
+        click.echo(f"✅ Attendees added successfully!")
+        click.echo(f"   Event ID: {event.get('id')}")
+        click.echo(f"   Total attendees: {len(event.get('attendees', []))}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.argument("emails", nargs=-1, required=True)
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
+@_account_option
+@click.pass_context
+def remove_attendees(ctx, event_id, emails, calendar, send_updates, account):
+    """Remove attendees from an event."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.remove_attendees(event_id, list(emails), calendar_id=calendar, send_updates=send_updates)
+        click.echo(f"✅ Attendees removed successfully!")
+        click.echo(f"   Event ID: {event.get('id')}")
+        click.echo(f"   Remaining attendees: {len(event.get('attendees', []))}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.argument("location")
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@_account_option
+@click.pass_context
+def set_location(ctx, event_id, location, calendar, account):
+    """Set location for an event."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.update_event(event_id, location=location, calendar_id=calendar)
+        click.echo(f"✅ Location updated successfully!")
+        click.echo(f"   Event ID: {event.get('id')}")
+        click.echo(f"   Location: {event.get('location')}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.argument("new_start")
+@click.argument("new_end")
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@_account_option
+@click.pass_context
+def propose_new_time(ctx, event_id, new_start, new_end, calendar, account):
+    """Propose a new time for an event (as an attendee)."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.propose_new_time(event_id, new_start, new_end, calendar_id=calendar)
+        click.echo(f"✅ New time proposed successfully!")
+        click.echo(f"   Event ID: {event.get('id')}")
+        click.echo(f"   Proposed start: {event.get('start', {}).get('dateTime', 'N/A')}")
+        click.echo(f"   Proposed end: {event.get('end', {}).get('dateTime', 'N/A')}")
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
         sys.exit(1)
