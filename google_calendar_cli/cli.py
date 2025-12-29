@@ -198,7 +198,7 @@ def get(ctx, event_id, calendar, account):
 @click.option("--end", "-e", help="End time (ISO format or natural language)")
 @click.option("--description", "-d", help="Event description")
 @click.option("--location", "-l", help="Event location")
-@click.option("--attendee", "-a", multiple=True, help="Attendee email address (can specify multiple)")
+@click.option("--attendee", multiple=True, help="Attendee email address (can specify multiple)")
 @click.option("--recurrence", "-r", help="Recurrence rule (RRULE format, e.g., 'FREQ=WEEKLY;COUNT=5')")
 @click.option("--reminder-email", help="Email reminder minutes before (e.g., '1440' for 24 hours)")
 @click.option("--reminder-popup", help="Popup reminder minutes before (e.g., '10')")
@@ -253,7 +253,7 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
 
 @cli.command()
 @click.argument("event_id")
-@click.option("--title", "-t", help="New event title")
+@click.option("--title", help="New event title")
 @click.option("--start", "-s", help="New start time")
 @click.option("--end", "-e", help="New end time")
 @click.option("--description", "-d", help="New description")
