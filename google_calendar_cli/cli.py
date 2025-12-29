@@ -68,6 +68,7 @@ def accounts():
 
 @cli.command()
 @click.argument("account_name")
+def use(account_name):
     """Set default account to use."""
     accounts_list = list_accounts()
     
