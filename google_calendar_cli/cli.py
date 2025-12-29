@@ -736,17 +736,31 @@ def colors(ctx, account):
 
 @cli.command()
 @click.argument("event_id")
-@click.option("--email", "-e", "emails", multiple=True, required=True, help="Attendee email address (can specify multiple)")
+@click.option("--emails", help="Comma-separated list of email addresses (e.g., 'email1@example.com,email2@example.com')")
+@click.option("--email", "email_list", multiple=True, help="Attendee email address (can specify multiple times)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
 @click.pass_context
 @_account_option
-def add_attendees(ctx, event_id, emails, calendar, send_updates, account):
+def add_attendees(ctx, event_id, emails, email_list, calendar, send_updates, account):
     """Add attendees to an event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    # Combine emails from both sources
+    all_emails = []
+    if emails:
+        all_emails.extend([e.strip() for e in emails.split(',')])
+    if email_list:
+        all_emails.extend(email_list)
+    
+    if not all_emails:
+        click.echo("❌ Error: At least one email address is required.", err=True)
+        click.echo("Usage: add-attendees <event_id> --emails 'email1,email2' OR --email email1 --email email2", err=True)
+        sys.exit(1)
+    
     try:
         api = CalendarAPI(account)
-        event = api.add_attendees(event_id, list(emails), calendar_id=calendar, send_updates=send_updates)
+        event = api.add_attendees(event_id, all_emails, calendar_id=calendar, send_updates=send_updates)
         click.echo(f"✅ Attendees added successfully!")
         click.echo(f"   Event ID: {event.get('id')}")
         click.echo(f"   Total attendees: {len(event.get('attendees', []))}")
@@ -757,17 +771,31 @@ def add_attendees(ctx, event_id, emails, calendar, send_updates, account):
 
 @cli.command()
 @click.argument("event_id")
-@click.option("--email", "-e", "emails", multiple=True, required=True, help="Attendee email address to remove (can specify multiple)")
+@click.option("--emails", help="Comma-separated list of email addresses to remove")
+@click.option("--email", "email_list", multiple=True, help="Attendee email address to remove (can specify multiple times)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
 @click.pass_context
 @_account_option
-def remove_attendees(ctx, event_id, emails, calendar, send_updates, account):
+def remove_attendees(ctx, event_id, emails, email_list, calendar, send_updates, account):
     """Remove attendees from an event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    # Combine emails from both sources
+    all_emails = []
+    if emails:
+        all_emails.extend([e.strip() for e in emails.split(',')])
+    if email_list:
+        all_emails.extend(email_list)
+    
+    if not all_emails:
+        click.echo("❌ Error: At least one email address is required.", err=True)
+        click.echo("Usage: remove-attendees <event_id> --emails 'email1,email2' OR --email email1 --email email2", err=True)
+        sys.exit(1)
+    
     try:
         api = CalendarAPI(account)
-        event = api.remove_attendees(event_id, list(emails), calendar_id=calendar, send_updates=send_updates)
+        event = api.remove_attendees(event_id, all_emails, calendar_id=calendar, send_updates=send_updates)
         click.echo(f"✅ Attendees removed successfully!")
         click.echo(f"   Event ID: {event.get('id')}")
         click.echo(f"   Remaining attendees: {len(event.get('attendees', []))}")
