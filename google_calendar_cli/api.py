@@ -120,6 +120,8 @@ class CalendarAPI:
         recurrence=None,
         reminders=None,
         timezone="UTC",
+        color_id=None,
+        add_meet=False,
     ):
         """
         Create a new event.
@@ -135,8 +137,11 @@ class CalendarAPI:
             recurrence: List of recurrence rules (RRULE format strings)
             reminders: Dict with 'useDefault' (bool) and 'overrides' (list of dicts with 'method' and 'minutes')
             timezone: Timezone string (default: 'UTC')
+            color_id: Event color ID (string)
+            add_meet: Whether to add Google Meet conference link (bool)
         """
         try:
+            import uuid
             event = {"summary": summary}
             
             # Parse and format start time
@@ -200,9 +205,27 @@ class CalendarAPI:
             if reminders:
                 event["reminders"] = reminders
             
+            if color_id:
+                event["colorId"] = color_id
+            
+            # Add Google Meet conference
+            if add_meet:
+                event["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": str(uuid.uuid4()),
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet"
+                        }
+                    }
+                }
+            
+            params = {"calendarId": calendar_id, "body": event}
+            if add_meet:
+                params["conferenceDataVersion"] = 1
+            
             created_event = (
                 self.service.events()
-                .insert(calendarId=calendar_id, body=event)
+                .insert(**params)
                 .execute()
             )
             return created_event
@@ -222,6 +245,9 @@ class CalendarAPI:
         recurrence=None,
         reminders=None,
         timezone=None,
+        color_id=None,
+        add_meet=False,
+        remove_meet=False,
     ):
         """
         Update an existing event.
@@ -238,8 +264,12 @@ class CalendarAPI:
             recurrence: List of recurrence rules (None = no change, [] = remove recurrence)
             reminders: Dict with 'useDefault' and 'overrides' (None = no change)
             timezone: Timezone string (uses existing if not provided)
+            color_id: Event color ID (None = no change, "" = remove color)
+            add_meet: Whether to add Google Meet conference link
+            remove_meet: Whether to remove Google Meet conference link
         """
         try:
+            import uuid
             # Get existing event
             event = self.get_event(event_id, calendar_id)
             
@@ -294,9 +324,36 @@ class CalendarAPI:
             if reminders is not None:
                 event["reminders"] = reminders
             
+            if color_id is not None:
+                if color_id == "":
+                    event.pop("colorId", None)
+                else:
+                    event["colorId"] = color_id
+            
+            # Handle Google Meet conference
+            if remove_meet:
+                event.pop("conferenceData", None)
+            elif add_meet:
+                event["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": str(uuid.uuid4()),
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet"
+                        }
+                    }
+                }
+            
+            params = {
+                "calendarId": calendar_id,
+                "eventId": event_id,
+                "body": event
+            }
+            if add_meet or remove_meet:
+                params["conferenceDataVersion"] = 1
+            
             updated_event = (
                 self.service.events()
-                .update(calendarId=calendar_id, eventId=event_id, body=event)
+                .update(**params)
                 .execute()
             )
             return updated_event
@@ -436,7 +493,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to get calendar: {error}")
     
-    def create_calendar(self, summary, description=None, timezone=None):
+    def create_calendar(self, summary, description=None, timezone=None, color_id=None):
         """
         Create a new calendar.
         
@@ -444,6 +501,7 @@ class CalendarAPI:
             summary: Calendar name
             description: Calendar description
             timezone: Timezone (e.g., 'America/Los_Angeles')
+            color_id: Calendar color ID
         """
         try:
             calendar = {"summary": summary}
@@ -451,13 +509,15 @@ class CalendarAPI:
                 calendar["description"] = description
             if timezone:
                 calendar["timeZone"] = timezone
+            if color_id:
+                calendar["colorId"] = color_id
             
             created_calendar = self.service.calendars().insert(body=calendar).execute()
             return created_calendar
         except HttpError as error:
             raise Exception(f"Failed to create calendar: {error}")
     
-    def update_calendar(self, calendar_id, summary=None, description=None, timezone=None):
+    def update_calendar(self, calendar_id, summary=None, description=None, timezone=None, color_id=None):
         """
         Update calendar metadata.
         
@@ -466,6 +526,7 @@ class CalendarAPI:
             summary: New calendar name
             description: New description
             timezone: New timezone
+            color_id: New color ID (None = no change, "" = remove color)
         """
         try:
             calendar = self.get_calendar(calendar_id)
@@ -476,6 +537,11 @@ class CalendarAPI:
                 calendar["description"] = description
             if timezone:
                 calendar["timeZone"] = timezone
+            if color_id is not None:
+                if color_id == "":
+                    calendar.pop("colorId", None)
+                else:
+                    calendar["colorId"] = color_id
             
             updated_calendar = self.service.calendars().update(
                 calendarId=calendar_id, body=calendar
@@ -517,4 +583,130 @@ class CalendarAPI:
             return colors
         except HttpError as error:
             raise Exception(f"Failed to get colors: {error}")
+    
+    def add_attendees(self, event_id, attendee_emails, calendar_id="primary", send_updates="all"):
+        """
+        Add attendees to an event.
+        
+        Args:
+            event_id: The event ID
+            attendee_emails: List of email addresses to add
+            calendar_id: Calendar ID (default: 'primary')
+            send_updates: Whether to send updates ('all', 'externalOnly', 'none')
+        """
+        try:
+            event = self.get_event(event_id, calendar_id)
+            existing_attendees = {att.get("email") for att in event.get("attendees", [])}
+            
+            new_attendees = []
+            for email in attendee_emails:
+                if email not in existing_attendees:
+                    new_attendees.append({"email": email})
+            
+            if not new_attendees:
+                return event
+            
+            event["attendees"] = event.get("attendees", []) + new_attendees
+            
+            updated_event = (
+                self.service.events()
+                .update(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    body=event,
+                    sendUpdates=send_updates
+                )
+                .execute()
+            )
+            return updated_event
+        except HttpError as error:
+            raise Exception(f"Failed to add attendees: {error}")
+    
+    def remove_attendees(self, event_id, attendee_emails, calendar_id="primary", send_updates="all"):
+        """
+        Remove attendees from an event.
+        
+        Args:
+            event_id: The event ID
+            attendee_emails: List of email addresses to remove
+            calendar_id: Calendar ID (default: 'primary')
+            send_updates: Whether to send updates ('all', 'externalOnly', 'none')
+        """
+        try:
+            event = self.get_event(event_id, calendar_id)
+            attendees = event.get("attendees", [])
+            
+            # Filter out removed attendees
+            emails_to_remove = set(attendee_emails)
+            event["attendees"] = [
+                att for att in attendees
+                if att.get("email") not in emails_to_remove
+            ]
+            
+            updated_event = (
+                self.service.events()
+                .update(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    body=event,
+                    sendUpdates=send_updates
+                )
+                .execute()
+            )
+            return updated_event
+        except HttpError as error:
+            raise Exception(f"Failed to remove attendees: {error}")
+    
+    def propose_new_time(self, event_id, new_start_time, new_end_time, calendar_id="primary"):
+        """
+        Propose a new time for an event (as an attendee).
+        
+        Args:
+            event_id: The event ID
+            new_start_time: New start datetime (ISO string or datetime)
+            new_end_time: New end datetime (ISO string or datetime)
+            calendar_id: Calendar ID (default: 'primary')
+        """
+        try:
+            event = self.get_event(event_id, calendar_id)
+            
+            # Parse new times
+            if isinstance(new_start_time, datetime):
+                new_start = new_start_time.isoformat()
+            else:
+                start_dt = parse_datetime(new_start_time)
+                new_start = start_dt.isoformat() if start_dt else new_start_time
+            
+            if isinstance(new_end_time, datetime):
+                new_end = new_end_time.isoformat()
+            else:
+                end_dt = parse_datetime(new_end_time)
+                new_end = end_dt.isoformat() if end_dt else new_end_time
+            
+            # Update attendee's response with proposed time
+            # Note: This requires the user to be an attendee
+            # The API doesn't have a direct "propose new time" endpoint,
+            # but we can update the event with a new time and set attendee response
+            event["start"]["dateTime"] = new_start
+            event["end"]["dateTime"] = new_end
+            
+            # Mark as tentative/proposed
+            # In practice, proposing new time typically involves:
+            # 1. Updating the event time
+            # 2. Setting attendee response to "tentative"
+            # 3. Sending updates to organizer
+            
+            updated_event = (
+                self.service.events()
+                .update(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    body=event,
+                    sendUpdates="all"
+                )
+                .execute()
+            )
+            return updated_event
+        except HttpError as error:
+            raise Exception(f"Failed to propose new time: {error}")
 

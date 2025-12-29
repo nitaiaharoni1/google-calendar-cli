@@ -203,10 +203,12 @@ def get(ctx, event_id, calendar, account):
 @click.option("--reminder-email", help="Email reminder minutes before (e.g., '1440' for 24 hours)")
 @click.option("--reminder-popup", help="Popup reminder minutes before (e.g., '10')")
 @click.option("--timezone", "-t", default="UTC", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.option("--color", help="Event color ID (use 'colors' command to see available colors)")
+@click.option("--meet", is_flag=True, help="Add Google Meet video conference link")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.pass_context
 @_account_option
-def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, calendar, account):
+def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, calendar, account):
     """Create a new event."""
     account = account or ctx.obj.get('ACCOUNT')
     try:
@@ -238,6 +240,8 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
             recurrence=recurrence_list,
             reminders=reminders,
             timezone=timezone,
+            color_id=color,
+            add_meet=meet,
         )
         click.echo(f"✅ Event created successfully!")
         click.echo(f"   ID: {result.get('id')}")
@@ -259,10 +263,13 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
 @click.option("--reminder-email", help="Email reminder minutes before")
 @click.option("--reminder-popup", help="Popup reminder minutes before")
 @click.option("--timezone", "-t", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.option("--color", help="Event color ID (use 'colors' command to see available colors, empty string to remove)")
+@click.option("--meet", is_flag=True, help="Add Google Meet video conference link")
+@click.option("--no-meet", is_flag=True, help="Remove Google Meet video conference link")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.pass_context
 @_account_option
-def update(ctx, event_id, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, calendar, account):
+def update(ctx, event_id, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, no_meet, calendar, account):
     """Update an event."""
     account = account or ctx.obj.get('ACCOUNT')
     try:
@@ -298,6 +305,9 @@ def update(ctx, event_id, title, start, end, description, location, attendee, re
             recurrence=recurrence_list,
             reminders=reminders,
             timezone=timezone,
+            color_id=color,
+            add_meet=meet,
+            remove_meet=no_meet,
         )
         click.echo(f"✅ Event updated successfully!")
         click.echo(f"   ID: {result.get('id')}")
