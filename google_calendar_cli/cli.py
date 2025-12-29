@@ -10,9 +10,12 @@ from .utils import format_datetime, get_today_start, get_week_start, get_week_en
 
 @click.group()
 @click.version_option(version="1.0.0")
-def cli():
+@click.option("--account", "-a", help="Account name to use (default: current default account)")
+@click.pass_context
+def cli(ctx, account):
     """Google Calendar CLI - Command-line interface for Google Calendar."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["ACCOUNT"] = account
 
 
 # Account option decorator
@@ -65,7 +68,6 @@ def accounts():
 
 @cli.command()
 @click.argument("account_name")
-def use(account_name):
     """Set default account to use."""
     accounts_list = list_accounts()
     
@@ -81,8 +83,10 @@ def use(account_name):
 
 @cli.command()
 @_account_option
-def me(account):
+@click.pass_context
+def me(ctx, account):
     """Show authenticated user information."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         profile = api.get_profile()
@@ -101,8 +105,10 @@ def me(account):
 @click.option("--max", "-m", default=10, help="Maximum number of events")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @_account_option
-def list(max, calendar, account):
+@click.pass_context
+def list(ctx, max, calendar, account):
     """List upcoming events."""
+    account = account or ctx.obj.get("ACCOUNT")
     try:
         api = CalendarAPI(account)
         now = datetime.utcnow()
@@ -148,8 +154,10 @@ def list(max, calendar, account):
 @click.argument("event_id")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @_account_option
-def get(event_id, calendar, account):
+@click.pass_context
+def get(ctx, event_id, calendar, account):
     """Get event details."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         event = api.get_event(event_id, calendar_id=calendar)
@@ -189,12 +197,35 @@ def get(event_id, calendar, account):
 @click.option("--end", "-e", help="End time (ISO format or natural language)")
 @click.option("--description", "-d", help="Event description")
 @click.option("--location", "-l", help="Event location")
+@click.option("--attendee", "-a", multiple=True, help="Attendee email address (can specify multiple)")
+@click.option("--recurrence", "-r", help="Recurrence rule (RRULE format, e.g., 'FREQ=WEEKLY;COUNT=5')")
+@click.option("--reminder-email", help="Email reminder minutes before (e.g., '1440' for 24 hours)")
+@click.option("--reminder-popup", help="Popup reminder minutes before (e.g., '10')")
+@click.option("--timezone", "-t", default="UTC", help="Timezone (e.g., 'America/Los_Angeles')")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.pass_context
 @_account_option
-def create(title, start, end, description, location, calendar, account):
+def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, calendar, account):
     """Create a new event."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
+        
+        # Build reminders dict if specified
+        reminders = None
+        if reminder_email or reminder_popup:
+            overrides = []
+            if reminder_email:
+                overrides.append({"method": "email", "minutes": int(reminder_email)})
+            if reminder_popup:
+                overrides.append({"method": "popup", "minutes": int(reminder_popup)})
+            reminders = {"useDefault": False, "overrides": overrides}
+        
+        # Parse recurrence
+        recurrence_list = None
+        if recurrence:
+            recurrence_list = [f"RRULE:{recurrence}"] if not recurrence.startswith("RRULE:") else [recurrence]
+        
         result = api.create_event(
             summary=title,
             start_time=start,
@@ -202,6 +233,10 @@ def create(title, start, end, description, location, calendar, account):
             description=description,
             location=location,
             calendar_id=calendar,
+            attendees=list(attendee) if attendee else None,
+            recurrence=recurrence_list,
+            reminders=reminders,
+            timezone=timezone,
         )
         click.echo(f"✅ Event created successfully!")
         click.echo(f"   ID: {result.get('id')}")
@@ -218,12 +253,38 @@ def create(title, start, end, description, location, calendar, account):
 @click.option("--end", "-e", help="New end time")
 @click.option("--description", "-d", help="New description")
 @click.option("--location", "-l", help="New location")
+@click.option("--attendee", "-a", multiple=True, help="Attendee email address (can specify multiple, use empty to clear)")
+@click.option("--recurrence", "-r", help="Recurrence rule (RRULE format, empty string to remove)")
+@click.option("--reminder-email", help="Email reminder minutes before")
+@click.option("--reminder-popup", help="Popup reminder minutes before")
+@click.option("--timezone", "-t", help="Timezone (e.g., 'America/Los_Angeles')")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.pass_context
 @_account_option
-def update(event_id, title, start, end, description, location, calendar, account):
+def update(ctx, event_id, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, calendar, account):
     """Update an event."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
+        
+        # Build reminders dict if specified
+        reminders = None
+        if reminder_email or reminder_popup:
+            overrides = []
+            if reminder_email:
+                overrides.append({"method": "email", "minutes": int(reminder_email)})
+            if reminder_popup:
+                overrides.append({"method": "popup", "minutes": int(reminder_popup)})
+            reminders = {"useDefault": False, "overrides": overrides}
+        
+        # Parse recurrence
+        recurrence_list = None
+        if recurrence is not None:
+            if recurrence == "":
+                recurrence_list = []
+            else:
+                recurrence_list = [f"RRULE:{recurrence}"] if not recurrence.startswith("RRULE:") else [recurrence]
+        
         result = api.update_event(
             event_id=event_id,
             summary=title,
@@ -232,6 +293,10 @@ def update(event_id, title, start, end, description, location, calendar, account
             description=description,
             location=location,
             calendar_id=calendar,
+            attendees=list(attendee) if attendee else None,
+            recurrence=recurrence_list,
+            reminders=reminders,
+            timezone=timezone,
         )
         click.echo(f"✅ Event updated successfully!")
         click.echo(f"   ID: {result.get('id')}")
@@ -245,9 +310,11 @@ def update(event_id, title, start, end, description, location, calendar, account
 @click.argument("event_id")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.confirmation_option(prompt="Are you sure you want to delete this event?")
+@click.pass_context
 @_account_option
-def delete(event_id, calendar, account):
+def delete(ctx, event_id, calendar, account):
     """Delete an event."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         api.delete_event(event_id, calendar_id=calendar)
@@ -258,9 +325,11 @@ def delete(event_id, calendar, account):
 
 
 @cli.command()
+@click.pass_context
 @_account_option
-def calendars(account):
+def calendars(ctx, account):
     """List all calendars."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         calendars = api.list_calendars()
@@ -287,9 +356,11 @@ def calendars(account):
 
 @cli.command()
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.pass_context
 @_account_option
-def today(calendar, account):
+def today(ctx, calendar, account):
     """Show today's events."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         today_start = get_today_start()
@@ -327,9 +398,11 @@ def today(calendar, account):
 
 @cli.command()
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.pass_context
 @_account_option
-def week(calendar, account):
+def week(ctx, calendar, account):
     """Show this week's events."""
+    account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
         week_start = get_week_start()
@@ -363,6 +436,285 @@ def week(calendar, account):
                     summary = event.get("summary", "No Title")
                     time_str = start_dt.strftime("%H:%M")
                     click.echo(f"  • {time_str} - {summary}")
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("text")
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.pass_context
+@_account_option
+def quick_add(ctx, text, calendar, account):
+    """Create an event using quick add (natural language)."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.quick_add_event(text, calendar_id=calendar)
+        click.echo(f"✅ Event created successfully!")
+        click.echo(f"   ID: {event.get('id')}")
+        click.echo(f"   Title: {event.get('summary')}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.argument("destination_calendar")
+@click.option("--calendar", "-c", default="primary", help="Source calendar ID")
+@click.pass_context
+@_account_option
+def move(ctx, event_id, destination_calendar, calendar, account):
+    """Move an event to another calendar."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        event = api.move_event(event_id, destination_calendar, calendar_id=calendar)
+        click.echo(f"✅ Event moved successfully!")
+        click.echo(f"   Event ID: {event.get('id')}")
+        click.echo(f"   Title: {event.get('summary')}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("event_id")
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--max", "-m", default=250, help="Maximum number of instances")
+@click.pass_context
+@_account_option
+def instances(ctx, event_id, calendar, max, account):
+    """Get instances of a recurring event."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        instances_list = api.get_recurring_event_instances(event_id, calendar_id=calendar, max_results=max)
+        
+        if not instances_list:
+            click.echo("No instances found.")
+            return
+        
+        click.echo(f"Found {len(instances_list)} instances:\n")
+        for instance in instances_list:
+            summary = instance.get("summary", "No Title")
+            start = instance.get("start", {})
+            start_time = start.get("dateTime") or start.get("date")
+            if start_time:
+                start_dt = parse_datetime(start_time)
+                start_str = format_datetime(start_dt) if start_dt else start_time
+            else:
+                start_str = "Unknown"
+            
+            click.echo(f"📅 {summary}")
+            click.echo(f"   ID: {instance.get('id')}")
+            click.echo(f"   Start: {start_str}")
+            click.echo()
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("query")
+@click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--max", "-m", default=10, help="Maximum number of results")
+@click.pass_context
+@_account_option
+def search(ctx, query, calendar, max, account):
+    """Search events using a query string."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        events = api.search_events(query, calendar_id=calendar, max_results=max)
+        
+        if not events:
+            click.echo(f"No events found for query: {query}")
+            return
+        
+        click.echo(f"Found {len(events)} events for '{query}':\n")
+        for event in events:
+            summary = event.get("summary", "No Title")
+            start = event.get("start", {})
+            start_time = start.get("dateTime") or start.get("date")
+            if start_time:
+                start_dt = parse_datetime(start_time)
+                start_str = format_datetime(start_dt) if start_dt else start_time
+            else:
+                start_str = "Unknown"
+            
+            click.echo(f"📅 {summary}")
+            click.echo(f"   ID: {event.get('id')}")
+            click.echo(f"   Start: {start_str}")
+            click.echo()
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("time_min")
+@click.argument("time_max")
+@click.option("--calendar", "-c", multiple=True, help="Calendar IDs to check (can specify multiple)")
+@click.pass_context
+@_account_option
+def freebusy(ctx, time_min, time_max, calendar, account):
+    """Query free/busy information for calendars."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        calendar_ids = list(calendar) if calendar else None
+        result = api.freebusy_query(time_min, time_max, calendar_ids=calendar_ids)
+        
+        calendars = result.get("calendars", {})
+        click.echo("Free/Busy Information:\n")
+        for cal_id, cal_data in calendars.items():
+            click.echo(f"📅 Calendar: {cal_id}")
+            busy = cal_data.get("busy", [])
+            if busy:
+                click.echo("   Busy periods:")
+                for period in busy:
+                    click.echo(f"     {period.get('start')} - {period.get('end')}")
+            else:
+                click.echo("   ✅ Free")
+            click.echo()
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("calendar_id")
+@click.pass_context
+@_account_option
+def get_calendar(ctx, calendar_id, account):
+    """Get calendar metadata."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        calendar = api.get_calendar(calendar_id)
+        
+        click.echo(f"📅 {calendar.get('summary', 'Unnamed')}")
+        click.echo(f"   ID: {calendar.get('id')}")
+        if calendar.get("description"):
+            click.echo(f"   Description: {calendar.get('description')}")
+        if calendar.get("timeZone"):
+            click.echo(f"   Timezone: {calendar.get('timeZone')}")
+        if calendar.get("location"):
+            click.echo(f"   Location: {calendar.get('location')}")
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("summary")
+@click.option("--description", "-d", help="Calendar description")
+@click.option("--timezone", "-t", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.pass_context
+@_account_option
+def create_calendar(ctx, summary, description, timezone, account):
+    """Create a new calendar."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        calendar = api.create_calendar(summary, description=description, timezone=timezone)
+        click.echo(f"✅ Calendar created successfully!")
+        click.echo(f"   ID: {calendar.get('id')}")
+        click.echo(f"   Name: {calendar.get('summary')}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("calendar_id")
+@click.option("--summary", "-s", help="New calendar name")
+@click.option("--description", "-d", help="New description")
+@click.option("--timezone", "-t", help="New timezone")
+@click.pass_context
+@_account_option
+def update_calendar(ctx, calendar_id, summary, description, timezone, account):
+    """Update calendar metadata."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        calendar = api.update_calendar(calendar_id, summary=summary, description=description, timezone=timezone)
+        click.echo(f"✅ Calendar updated successfully!")
+        click.echo(f"   ID: {calendar.get('id')}")
+        click.echo(f"   Name: {calendar.get('summary')}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("calendar_id")
+@click.confirmation_option(prompt="Are you sure you want to delete this calendar?")
+@click.pass_context
+@_account_option
+def delete_calendar(ctx, calendar_id, account):
+    """Delete a calendar (secondary calendars only)."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        api.delete_calendar(calendar_id)
+        click.echo(f"✅ Calendar {calendar_id} deleted successfully")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("calendar_id")
+@click.confirmation_option(prompt="Are you sure you want to clear all events from this calendar?")
+@click.pass_context
+@_account_option
+def clear_calendar(ctx, calendar_id, account):
+    """Clear all events from a calendar (primary calendar only)."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        api.clear_calendar(calendar_id)
+        click.echo(f"✅ Calendar {calendar_id} cleared successfully")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.pass_context
+@_account_option
+def colors(ctx, account):
+    """Get available colors for calendars and events."""
+    account = account or ctx.obj.get('ACCOUNT')
+    try:
+        api = CalendarAPI(account)
+        colors_data = api.get_colors()
+        
+        calendar_colors = colors_data.get("calendar", {})
+        event_colors = colors_data.get("event", {})
+        
+        if calendar_colors:
+            click.echo("Calendar Colors:\n")
+            for color_id, color_info in calendar_colors.items():
+                background = color_info.get("background", "N/A")
+                foreground = color_info.get("foreground", "N/A")
+                click.echo(f"   {color_id}: bg={background}, fg={foreground}")
+        
+        if event_colors:
+            click.echo("\nEvent Colors:\n")
+            for color_id, color_info in event_colors.items():
+                background = color_info.get("background", "N/A")
+                foreground = color_info.get("foreground", "N/A")
+                click.echo(f"   {color_id}: bg={background}, fg={foreground}")
     
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)

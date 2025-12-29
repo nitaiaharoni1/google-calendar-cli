@@ -116,6 +116,10 @@ class CalendarAPI:
         description=None,
         location=None,
         calendar_id="primary",
+        attendees=None,
+        recurrence=None,
+        reminders=None,
+        timezone="UTC",
     ):
         """
         Create a new event.
@@ -127,6 +131,10 @@ class CalendarAPI:
             description: Event description
             location: Event location
             calendar_id: Calendar ID (default: 'primary')
+            attendees: List of attendee email addresses
+            recurrence: List of recurrence rules (RRULE format strings)
+            reminders: Dict with 'useDefault' (bool) and 'overrides' (list of dicts with 'method' and 'minutes')
+            timezone: Timezone string (default: 'UTC')
         """
         try:
             event = {"summary": summary}
@@ -136,21 +144,21 @@ class CalendarAPI:
                 if isinstance(start_time, datetime):
                     event["start"] = {
                         "dateTime": start_time.isoformat(),
-                        "timeZone": "UTC",
+                        "timeZone": timezone,
                     }
                 else:
                     start_dt = parse_datetime(start_time)
                     if start_dt:
                         event["start"] = {
                             "dateTime": start_dt.isoformat(),
-                            "timeZone": "UTC",
+                            "timeZone": timezone,
                         }
             else:
                 # Default to now
                 now = datetime.utcnow()
                 event["start"] = {
                     "dateTime": now.isoformat(),
-                    "timeZone": "UTC",
+                    "timeZone": timezone,
                 }
             
             # Parse and format end time
@@ -158,14 +166,14 @@ class CalendarAPI:
                 if isinstance(end_time, datetime):
                     event["end"] = {
                         "dateTime": end_time.isoformat(),
-                        "timeZone": "UTC",
+                        "timeZone": timezone,
                     }
                 else:
                     end_dt = parse_datetime(end_time)
                     if end_dt:
                         event["end"] = {
                             "dateTime": end_dt.isoformat(),
-                            "timeZone": "UTC",
+                            "timeZone": timezone,
                         }
             else:
                 # Default to 1 hour after start
@@ -174,7 +182,7 @@ class CalendarAPI:
                     end_dt = start_dt + timedelta(hours=1)
                     event["end"] = {
                         "dateTime": end_dt.isoformat(),
-                        "timeZone": "UTC",
+                        "timeZone": timezone,
                     }
             
             if description:
@@ -182,6 +190,15 @@ class CalendarAPI:
             
             if location:
                 event["location"] = location
+            
+            if attendees:
+                event["attendees"] = [{"email": email} for email in attendees]
+            
+            if recurrence:
+                event["recurrence"] = recurrence if isinstance(recurrence, list) else [recurrence]
+            
+            if reminders:
+                event["reminders"] = reminders
             
             created_event = (
                 self.service.events()
@@ -201,6 +218,10 @@ class CalendarAPI:
         description=None,
         location=None,
         calendar_id="primary",
+        attendees=None,
+        recurrence=None,
+        reminders=None,
+        timezone=None,
     ):
         """
         Update an existing event.
@@ -213,10 +234,18 @@ class CalendarAPI:
             description: New description
             location: New location
             calendar_id: Calendar ID (default: 'primary')
+            attendees: List of attendee email addresses (None = no change, [] = remove all)
+            recurrence: List of recurrence rules (None = no change, [] = remove recurrence)
+            reminders: Dict with 'useDefault' and 'overrides' (None = no change)
+            timezone: Timezone string (uses existing if not provided)
         """
         try:
             # Get existing event
             event = self.get_event(event_id, calendar_id)
+            
+            # Get existing timezone if not provided
+            if not timezone:
+                timezone = event.get("start", {}).get("timeZone", "UTC")
             
             # Update fields
             if summary:
@@ -226,28 +255,28 @@ class CalendarAPI:
                 if isinstance(start_time, datetime):
                     event["start"] = {
                         "dateTime": start_time.isoformat(),
-                        "timeZone": "UTC",
+                        "timeZone": timezone,
                     }
                 else:
                     start_dt = parse_datetime(start_time)
                     if start_dt:
                         event["start"] = {
                             "dateTime": start_dt.isoformat(),
-                            "timeZone": "UTC",
+                            "timeZone": timezone,
                         }
             
             if end_time:
                 if isinstance(end_time, datetime):
                     event["end"] = {
                         "dateTime": end_time.isoformat(),
-                        "timeZone": "UTC",
+                        "timeZone": timezone,
                     }
                 else:
                     end_dt = parse_datetime(end_time)
                     if end_dt:
                         event["end"] = {
                             "dateTime": end_dt.isoformat(),
-                            "timeZone": "UTC",
+                            "timeZone": timezone,
                         }
             
             if description is not None:
@@ -255,6 +284,15 @@ class CalendarAPI:
             
             if location is not None:
                 event["location"] = location
+            
+            if attendees is not None:
+                event["attendees"] = [{"email": email} for email in attendees] if attendees else []
+            
+            if recurrence is not None:
+                event["recurrence"] = recurrence if isinstance(recurrence, list) else [recurrence] if recurrence else []
+            
+            if reminders is not None:
+                event["reminders"] = reminders
             
             updated_event = (
                 self.service.events()
@@ -280,4 +318,203 @@ class CalendarAPI:
             return True
         except HttpError as error:
             raise Exception(f"Failed to delete event: {error}")
+    
+    def quick_add_event(self, text, calendar_id="primary"):
+        """
+        Create an event using quick add (natural language).
+        
+        Args:
+            text: Natural language description (e.g., "Appointment on June 3rd 10am-10:25am")
+            calendar_id: Calendar ID (default: 'primary')
+        """
+        try:
+            event = self.service.events().quickAdd(
+                calendarId=calendar_id, text=text
+            ).execute()
+            return event
+        except HttpError as error:
+            raise Exception(f"Failed to quick add event: {error}")
+    
+    def move_event(self, event_id, destination_calendar_id, calendar_id="primary"):
+        """
+        Move an event to another calendar.
+        
+        Args:
+            event_id: The event ID
+            destination_calendar_id: Calendar ID to move event to
+            calendar_id: Source calendar ID (default: 'primary')
+        """
+        try:
+            event = self.service.events().move(
+                calendarId=calendar_id,
+                eventId=event_id,
+                destination=destination_calendar_id
+            ).execute()
+            return event
+        except HttpError as error:
+            raise Exception(f"Failed to move event: {error}")
+    
+    def get_recurring_event_instances(self, event_id, calendar_id="primary", max_results=250):
+        """
+        Get instances of a recurring event.
+        
+        Args:
+            event_id: The recurring event ID
+            calendar_id: Calendar ID (default: 'primary')
+            max_results: Maximum number of instances to return
+        """
+        try:
+            instances = self.service.events().instances(
+                calendarId=calendar_id,
+                eventId=event_id,
+                maxResults=max_results
+            ).execute()
+            return instances.get("items", [])
+        except HttpError as error:
+            raise Exception(f"Failed to get recurring event instances: {error}")
+    
+    def search_events(self, query, calendar_id="primary", max_results=10):
+        """
+        Search events using a query string.
+        
+        Args:
+            query: Search query string
+            calendar_id: Calendar ID (default: 'primary')
+            max_results: Maximum number of results
+        """
+        try:
+            events_result = self.service.events().list(
+                calendarId=calendar_id,
+                q=query,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+            return events_result.get("items", [])
+        except HttpError as error:
+            raise Exception(f"Failed to search events: {error}")
+    
+    def freebusy_query(self, time_min, time_max, calendar_ids=None):
+        """
+        Query free/busy information for calendars.
+        
+        Args:
+            time_min: Start time (datetime or ISO string)
+            time_max: End time (datetime or ISO string)
+            calendar_ids: List of calendar IDs to check (default: primary)
+        """
+        try:
+            if calendar_ids is None:
+                calendar_ids = ["primary"]
+            
+            if isinstance(time_min, datetime):
+                time_min = time_min.isoformat() + "Z"
+            if isinstance(time_max, datetime):
+                time_max = time_max.isoformat() + "Z"
+            
+            body = {
+                "timeMin": time_min,
+                "timeMax": time_max,
+                "items": [{"id": cal_id} for cal_id in calendar_ids]
+            }
+            
+            freebusy = self.service.freebusy().query(body=body).execute()
+            return freebusy
+        except HttpError as error:
+            raise Exception(f"Failed to query freebusy: {error}")
+    
+    def get_calendar(self, calendar_id):
+        """
+        Get calendar metadata.
+        
+        Args:
+            calendar_id: Calendar ID
+        """
+        try:
+            calendar = self.service.calendars().get(calendarId=calendar_id).execute()
+            return calendar
+        except HttpError as error:
+            raise Exception(f"Failed to get calendar: {error}")
+    
+    def create_calendar(self, summary, description=None, timezone=None):
+        """
+        Create a new calendar.
+        
+        Args:
+            summary: Calendar name
+            description: Calendar description
+            timezone: Timezone (e.g., 'America/Los_Angeles')
+        """
+        try:
+            calendar = {"summary": summary}
+            if description:
+                calendar["description"] = description
+            if timezone:
+                calendar["timeZone"] = timezone
+            
+            created_calendar = self.service.calendars().insert(body=calendar).execute()
+            return created_calendar
+        except HttpError as error:
+            raise Exception(f"Failed to create calendar: {error}")
+    
+    def update_calendar(self, calendar_id, summary=None, description=None, timezone=None):
+        """
+        Update calendar metadata.
+        
+        Args:
+            calendar_id: Calendar ID
+            summary: New calendar name
+            description: New description
+            timezone: New timezone
+        """
+        try:
+            calendar = self.get_calendar(calendar_id)
+            
+            if summary:
+                calendar["summary"] = summary
+            if description is not None:
+                calendar["description"] = description
+            if timezone:
+                calendar["timeZone"] = timezone
+            
+            updated_calendar = self.service.calendars().update(
+                calendarId=calendar_id, body=calendar
+            ).execute()
+            return updated_calendar
+        except HttpError as error:
+            raise Exception(f"Failed to update calendar: {error}")
+    
+    def delete_calendar(self, calendar_id):
+        """
+        Delete a calendar (secondary calendars only).
+        
+        Args:
+            calendar_id: Calendar ID
+        """
+        try:
+            self.service.calendars().delete(calendarId=calendar_id).execute()
+            return True
+        except HttpError as error:
+            raise Exception(f"Failed to delete calendar: {error}")
+    
+    def clear_calendar(self, calendar_id):
+        """
+        Clear all events from a calendar (primary calendar only).
+        
+        Args:
+            calendar_id: Calendar ID
+        """
+        try:
+            self.service.calendars().clear(calendarId=calendar_id).execute()
+            return True
+        except HttpError as error:
+            raise Exception(f"Failed to clear calendar: {error}")
+    
+    def get_colors(self):
+        """Get available colors for calendars and events."""
+        try:
+            colors = self.service.colors().get().execute()
+            return colors
+        except HttpError as error:
+            raise Exception(f"Failed to get colors: {error}")
 
