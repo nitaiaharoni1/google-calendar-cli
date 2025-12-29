@@ -736,11 +736,11 @@ def colors(ctx, account):
 
 @cli.command()
 @click.argument("event_id")
-@click.argument("emails", nargs=-1, required=True)
+@click.option("--email", "-e", "emails", multiple=True, required=True, help="Attendee email address (can specify multiple)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
-@_account_option
 @click.pass_context
+@_account_option
 def add_attendees(ctx, event_id, emails, calendar, send_updates, account):
     """Add attendees to an event."""
     account = account or ctx.obj.get('ACCOUNT')
@@ -757,11 +757,11 @@ def add_attendees(ctx, event_id, emails, calendar, send_updates, account):
 
 @cli.command()
 @click.argument("event_id")
-@click.argument("emails", nargs=-1, required=True)
+@click.option("--email", "-e", "emails", multiple=True, required=True, help="Attendee email address to remove (can specify multiple)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
-@_account_option
 @click.pass_context
+@_account_option
 def remove_attendees(ctx, event_id, emails, calendar, send_updates, account):
     """Remove attendees from an event."""
     account = account or ctx.obj.get('ACCOUNT')
