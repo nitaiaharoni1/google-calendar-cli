@@ -4,6 +4,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from .auth import get_credentials, check_auth
 from .utils import parse_datetime, format_datetime
+from .retry import with_retry
 from datetime import datetime, timedelta
 
 
@@ -24,6 +25,7 @@ class CalendarAPI:
         self.service = build("calendar", "v3", credentials=creds)
         self.account = account
     
+    @with_retry()
     def get_profile(self):
         """Get user profile information."""
         try:
@@ -37,6 +39,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to get profile: {error}")
     
+    @with_retry()
     def list_calendars(self):
         """List all calendars."""
         try:
@@ -46,6 +49,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to list calendars: {error}")
     
+    @with_retry()
     def list_events(
         self,
         calendar_id="primary",
@@ -90,6 +94,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to list events: {error}")
     
+    @with_retry()
     def get_event(self, event_id, calendar_id="primary"):
         """
         Get a specific event by ID.
@@ -108,6 +113,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to get event: {error}")
     
+    @with_retry()
     def create_event(
         self,
         summary,
@@ -232,6 +238,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to create event: {error}")
     
+    @with_retry()
     def update_event(
         self,
         event_id,
@@ -360,6 +367,7 @@ class CalendarAPI:
         except HttpError as error:
             raise Exception(f"Failed to update event: {error}")
     
+    @with_retry()
     def delete_event(self, event_id, calendar_id="primary"):
         """
         Delete an event.

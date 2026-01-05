@@ -2,20 +2,44 @@
 
 import click
 import sys
+import logging
+import os
 from datetime import datetime, timedelta
 from .auth import authenticate, get_credentials, check_auth
 from .api import CalendarAPI
 from .utils import format_datetime, get_today_start, get_week_start, get_week_end, parse_datetime, list_accounts, get_default_account, set_default_account
+from .shared_auth import check_token_health, refresh_token
+from .config import get_preference, set_preference
+from .templates import list_templates, get_template, create_template, delete_template, render_template
+from .history import add_operation, get_recent_operations, get_last_undoable_operation
 
 
 @click.group()
 @click.version_option(version="1.0.0")
-@click.option("--account", "-a", help="Account name to use (default: current default account)")
+@click.option("--account", "-a", help="Account name to use (default: current default account or GOOGLE_CALENDAR_ACCOUNT env var)")
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
-def cli(ctx, account):
+def cli(ctx, account, verbose):
     """Google Calendar CLI - Command-line interface for Google Calendar."""
     ctx.ensure_object(dict)
+    # Resolve account: CLI arg > env var > default
+    if account is None:
+        account = os.getenv("GOOGLE_CALENDAR_ACCOUNT")
+    if account is None:
+        account = get_default_account()
     ctx.obj["ACCOUNT"] = account
+    
+    # Setup logging
+    if verbose or get_preference("verbose", False):
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        logging.getLogger("googleapiclient").setLevel(logging.DEBUG)
+        ctx.obj["VERBOSE"] = True
+    else:
+        logging.basicConfig(level=logging.WARNING)
+        ctx.obj["VERBOSE"] = False
 
 
 @cli.command(name="help")
@@ -109,6 +133,81 @@ def use(account_name):
     
     set_default_account(account_name)
     click.echo(f"✅ Default account set to: {account_name}")
+
+
+@cli.group()
+def auth():
+    """Authentication management commands."""
+    pass
+
+
+@auth.command()
+@click.option("--account", "-a", help="Check specific account (default: all accounts)")
+def status(account):
+    """Show token health status for account(s)."""
+    from .auth import SCOPES
+    
+    accounts_to_check = [account] if account else list_accounts()
+    
+    if not accounts_to_check:
+        click.echo("No accounts configured. Run 'google-calendar init' to add an account.")
+        return
+    
+    for acc in accounts_to_check:
+        health = check_token_health(acc, "calendar", SCOPES)
+        status_icon = {
+            "valid": "✅",
+            "expired_refreshable": "⚠️",
+            "expired": "❌",
+            "scope_mismatch": "❌",
+            "missing": "❌",
+            "error": "❌"
+        }.get(health["status"], "❓")
+        
+        click.echo(f"\n{status_icon} Account: {acc}")
+        click.echo(f"   Status: {health['status']}")
+        click.echo(f"   Message: {health.get('message', 'N/A')}")
+        
+        if health["status"] == "valid" and health.get("expires_in"):
+            hours = health["expires_in"] // 3600
+            days = hours // 24
+            if days > 0:
+                click.echo(f"   Expires in: {days} days, {hours % 24} hours")
+            else:
+                click.echo(f"   Expires in: {hours} hours")
+        
+        if health["status"] == "scope_mismatch":
+            click.echo(f"   Current scopes: {', '.join(health.get('current_scopes', []))}")
+            click.echo(f"   Required scopes: {', '.join(health.get('required_scopes', []))}")
+
+
+@auth.command()
+@click.option("--account", "-a", help="Refresh specific account (default: current default)")
+@click.option("--all", is_flag=True, help="Refresh all accounts")
+def refresh(account, all):
+    """Refresh expired token(s)."""
+    from .auth import SCOPES
+    
+    if all:
+        accounts_to_refresh = list_accounts()
+        if not accounts_to_refresh:
+            click.echo("No accounts configured.")
+            return
+    else:
+        accounts_to_refresh = [account or get_default_account()]
+        if not accounts_to_refresh[0]:
+            click.echo("❌ Error: No account specified and no default account set.")
+            click.echo("Use --account <name> or run 'google-calendar init' first.")
+            sys.exit(1)
+    
+    for acc in accounts_to_refresh:
+        click.echo(f"\nRefreshing account: {acc}")
+        creds = refresh_token(acc, "calendar", SCOPES)
+        if creds:
+            click.echo(f"✅ Token refreshed successfully for {acc}")
+        else:
+            click.echo(f"❌ Failed to refresh token for {acc}")
+            click.echo(f"   Run 'google-calendar init --account {acc}' to re-authenticate.")
 
 
 @cli.command()
@@ -222,7 +321,7 @@ def get(ctx, event_id, calendar, account):
 
 
 @cli.command()
-@click.argument("title")
+@click.argument("title", required=False)
 @click.option("--start", "-s", help="Start time (ISO format or natural language)")
 @click.option("--end", "-e", help="End time (ISO format or natural language)")
 @click.option("--description", "-d", help="Event description")
@@ -235,11 +334,63 @@ def get(ctx, event_id, calendar, account):
 @click.option("--color", help="Event color ID (use 'colors' command to see available colors)")
 @click.option("--meet", is_flag=True, help="Add Google Meet video conference link")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--template", help="Use event template (name)")
+@click.option("--interactive", "-i", is_flag=True, help="Interactive mode - prompts for missing fields")
+@click.option("--dry-run", is_flag=True, help="Show what would be created without actually creating")
 @click.pass_context
 @_account_option
-def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, calendar, account):
+def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, calendar, template, interactive, dry_run, account):
     """Create a new event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    # Interactive mode - prompt for missing fields
+    if interactive or not title:
+        if not title:
+            title = click.prompt("Title", type=str)
+        if not start:
+            start = click.prompt("Start time (ISO format or natural language)", type=str)
+        if not end:
+            end = click.prompt("End time (ISO format or natural language)", type=str)
+        if not description:
+            description_input = click.prompt("Description (optional, press Enter to skip)", default="", show_default=False)
+            description = description_input if description_input else None
+        if not location:
+            location_input = click.prompt("Location (optional, press Enter to skip)", default="", show_default=False)
+            location = location_input if location_input else None
+    
+    # Load template if specified
+    if template:
+        try:
+            template_data = render_template(template, title=title, start=start, end=end)
+            title = template_data.get("title") or title
+            description = template_data.get("description") or description
+            location = template_data.get("location") or location
+            if template_data.get("attendees"):
+                attendee = list(attendee) + template_data.get("attendees", [])
+        except Exception as e:
+            click.echo(f"❌ Error loading template: {e}", err=True)
+            sys.exit(1)
+    
+    if dry_run:
+        click.echo("🔍 DRY RUN - Would create event:")
+        click.echo(f"   Title: {title}")
+        click.echo(f"   Calendar: {calendar}")
+        if start:
+            click.echo(f"   Start: {start}")
+        if end:
+            click.echo(f"   End: {end}")
+        if location:
+            click.echo(f"   Location: {location}")
+        if description:
+            click.echo(f"   Description: {description[:100]}..." if len(description) > 100 else f"   Description: {description}")
+        if attendee:
+            click.echo(f"   Attendees: {', '.join(attendee)}")
+        if recurrence:
+            click.echo(f"   Recurrence: {recurrence}")
+        if meet:
+            click.echo("   Google Meet: Yes")
+        return
+    
     try:
         api = CalendarAPI(account)
         
@@ -272,6 +423,14 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
             color_id=color,
             add_meet=meet,
         )
+        
+        # Record in history (create is undoable - can delete)
+        add_operation("create", {
+            "event_id": result.get("id"),
+            "title": title,
+            "calendar": calendar
+        }, undoable=True, undo_func="delete")
+        
         click.echo(f"✅ Event created successfully!")
         click.echo(f"   ID: {result.get('id')}")
         click.echo(f"   Title: {result.get('summary')}")
@@ -296,11 +455,28 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
 @click.option("--meet", is_flag=True, help="Add Google Meet video conference link")
 @click.option("--no-meet", is_flag=True, help="Remove Google Meet video conference link")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--dry-run", is_flag=True, help="Show what would be updated without actually updating")
 @click.pass_context
 @_account_option
-def update(ctx, event_id, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, no_meet, calendar, account):
+def update(ctx, event_id, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, no_meet, calendar, dry_run, account):
     """Update an event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    if dry_run:
+        click.echo(f"🔍 DRY RUN - Would update event {event_id}:")
+        if title:
+            click.echo(f"   Title: {title}")
+        if start:
+            click.echo(f"   Start: {start}")
+        if end:
+            click.echo(f"   End: {end}")
+        if location:
+            click.echo(f"   Location: {location}")
+        if description:
+            click.echo(f"   Description: {description[:100]}..." if len(description) > 100 else f"   Description: {description}")
+        if attendee:
+            click.echo(f"   Attendees: {', '.join(attendee)}")
+        return
     try:
         api = CalendarAPI(account)
         
@@ -322,6 +498,9 @@ def update(ctx, event_id, title, start, end, description, location, attendee, re
             else:
                 recurrence_list = [f"RRULE:{recurrence}"] if not recurrence.startswith("RRULE:") else [recurrence]
         
+        # Get original event for undo
+        original_event = api.get_event(event_id, calendar_id=calendar)
+        
         result = api.update_event(
             event_id=event_id,
             summary=title,
@@ -338,6 +517,14 @@ def update(ctx, event_id, title, start, end, description, location, attendee, re
             add_meet=meet,
             remove_meet=no_meet,
         )
+        
+        # Record in history (update is undoable - can restore original)
+        add_operation("update", {
+            "event_id": event_id,
+            "calendar": calendar,
+            "original": original_event
+        }, undoable=True, undo_func="restore")
+        
         click.echo(f"✅ Event updated successfully!")
         click.echo(f"   ID: {result.get('id')}")
         click.echo(f"   Title: {result.get('summary')}")
@@ -349,15 +536,31 @@ def update(ctx, event_id, title, start, end, description, location, attendee, re
 @cli.command()
 @click.argument("event_id")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted without actually deleting")
 @click.confirmation_option(prompt="Are you sure you want to delete this event?")
 @click.pass_context
 @_account_option
-def delete(ctx, event_id, calendar, account):
+def delete(ctx, event_id, calendar, dry_run, account):
     """Delete an event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    if dry_run:
+        click.echo(f"🔍 DRY RUN - Would delete event {event_id} from calendar {calendar}")
+        return
     try:
+        # Get event details before deletion for history
         api = CalendarAPI(account)
+        event_details = api.get_event(event_id, calendar_id=calendar)
+        
         api.delete_event(event_id, calendar_id=calendar)
+        
+        # Record in history (delete is not undoable)
+        add_operation("delete", {
+            "event_id": event_id,
+            "calendar": calendar,
+            "title": event_details.get("summary", "Unknown")
+        }, undoable=False)
+        
         click.echo(f"✅ Event {event_id} deleted successfully")
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
@@ -765,26 +968,41 @@ def colors(ctx, account):
 
 @cli.command()
 @click.argument("event_id")
-@click.option("--emails", help="Comma-separated list of email addresses (e.g., 'email1@example.com,email2@example.com')")
+@click.argument("emails", nargs=-1, required=False)
+@click.option("--emails", "emails_opt", help="Comma-separated list of email addresses (e.g., 'email1@example.com,email2@example.com')")
 @click.option("--email", "email_list", multiple=True, help="Attendee email address (can specify multiple times)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
 @click.pass_context
 @_account_option
-def add_attendees(ctx, event_id, emails, email_list, calendar, send_updates, account):
-    """Add attendees to an event."""
+def add_attendees(ctx, event_id, emails, emails_opt, email_list, calendar, send_updates, account):
+    """Add attendees to an event.
+    
+    You can provide emails as positional arguments, --emails flag, or --email flags:
+    
+    \b
+    Examples:
+        google-calendar add-attendees EVENT_ID email1@x.com email2@x.com
+        google-calendar add-attendees EVENT_ID --emails "email1@x.com,email2@x.com"
+        google-calendar add-attendees EVENT_ID --email email1@x.com --email email2@x.com
+    """
     account = account or ctx.obj.get('ACCOUNT')
     
-    # Combine emails from both sources
+    # Combine emails from all sources: positional args, --emails flag, and --email flags
     all_emails = []
     if emails:
-        all_emails.extend([e.strip() for e in emails.split(',')])
+        all_emails.extend([e.strip() for e in emails])
+    if emails_opt:
+        all_emails.extend([e.strip() for e in emails_opt.split(',')])
     if email_list:
         all_emails.extend(email_list)
     
     if not all_emails:
         click.echo("❌ Error: At least one email address is required.", err=True)
-        click.echo("Usage: add-attendees <event_id> --emails 'email1,email2' OR --email email1 --email email2", err=True)
+        click.echo("\nUsage examples:", err=True)
+        click.echo("  google-calendar add-attendees EVENT_ID email1@x.com email2@x.com", err=True)
+        click.echo("  google-calendar add-attendees EVENT_ID --emails 'email1@x.com,email2@x.com'", err=True)
+        click.echo("  google-calendar add-attendees EVENT_ID --email email1@x.com --email email2@x.com", err=True)
         sys.exit(1)
     
     try:
@@ -800,26 +1018,41 @@ def add_attendees(ctx, event_id, emails, email_list, calendar, send_updates, acc
 
 @cli.command()
 @click.argument("event_id")
-@click.option("--emails", help="Comma-separated list of email addresses to remove")
+@click.argument("emails", nargs=-1, required=False)
+@click.option("--emails", "emails_opt", help="Comma-separated list of email addresses to remove")
 @click.option("--email", "email_list", multiple=True, help="Attendee email address to remove (can specify multiple times)")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
 @click.option("--send-updates", default="all", type=click.Choice(["all", "externalOnly", "none"]), help="Send updates to attendees")
 @click.pass_context
 @_account_option
-def remove_attendees(ctx, event_id, emails, email_list, calendar, send_updates, account):
-    """Remove attendees from an event."""
+def remove_attendees(ctx, event_id, emails, emails_opt, email_list, calendar, send_updates, account):
+    """Remove attendees from an event.
+    
+    You can provide emails as positional arguments, --emails flag, or --email flags:
+    
+    \b
+    Examples:
+        google-calendar remove-attendees EVENT_ID email1@x.com email2@x.com
+        google-calendar remove-attendees EVENT_ID --emails "email1@x.com,email2@x.com"
+        google-calendar remove-attendees EVENT_ID --email email1@x.com --email email2@x.com
+    """
     account = account or ctx.obj.get('ACCOUNT')
     
-    # Combine emails from both sources
+    # Combine emails from all sources: positional args, --emails flag, and --email flags
     all_emails = []
     if emails:
-        all_emails.extend([e.strip() for e in emails.split(',')])
+        all_emails.extend([e.strip() for e in emails])
+    if emails_opt:
+        all_emails.extend([e.strip() for e in emails_opt.split(',')])
     if email_list:
         all_emails.extend(email_list)
     
     if not all_emails:
         click.echo("❌ Error: At least one email address is required.", err=True)
-        click.echo("Usage: remove-attendees <event_id> --emails 'email1,email2' OR --email email1 --email email2", err=True)
+        click.echo("\nUsage examples:", err=True)
+        click.echo("  google-calendar remove-attendees EVENT_ID email1@x.com email2@x.com", err=True)
+        click.echo("  google-calendar remove-attendees EVENT_ID --emails 'email1@x.com,email2@x.com'", err=True)
+        click.echo("  google-calendar remove-attendees EVENT_ID --email email1@x.com --email email2@x.com", err=True)
         sys.exit(1)
     
     try:
@@ -872,6 +1105,187 @@ def propose_new_time(ctx, event_id, new_start, new_end, calendar, account):
         click.echo(f"   Proposed end: {event.get('end', {}).get('dateTime', 'N/A')}")
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.group()
+def template():
+    """Event template management commands."""
+    pass
+
+
+@template.command("list")
+def template_list():
+    """List all event templates."""
+    templates = list_templates()
+    if not templates:
+        click.echo("No templates found.")
+        click.echo("\nCreate a template with: google-calendar template create <name>")
+        return
+    
+    click.echo(f"Found {len(templates)} template(s):\n")
+    for tmpl in templates:
+        click.echo(f"📅 {tmpl['name']}")
+        if tmpl.get("title"):
+            click.echo(f"   Title: {tmpl['title']}")
+        if tmpl.get("location"):
+            click.echo(f"   Location: {tmpl['location']}")
+        if tmpl.get("duration_minutes"):
+            click.echo(f"   Duration: {tmpl['duration_minutes']} minutes")
+        click.echo()
+
+
+@template.command("create")
+@click.argument("name")
+@click.option("--title", help="Event title")
+@click.option("--description", help="Event description")
+@click.option("--location", help="Event location")
+@click.option("--duration", type=int, default=60, help="Duration in minutes")
+@click.option("--attendee", multiple=True, help="Attendee email address")
+def template_create(name, title, description, location, duration, attendee):
+    """Create a new event template."""
+    if not any([title, description, location]):
+        click.echo("Creating template interactively...")
+        title = title or click.prompt("Title (optional)", default="", show_default=False)
+        description = description or click.prompt("Description (optional)", default="", show_default=False)
+        location = location or click.prompt("Location (optional)", default="", show_default=False)
+    
+    template = create_template(
+        name,
+        title=title,
+        description=description,
+        location=location,
+        duration_minutes=duration,
+        attendees=list(attendee) if attendee else None
+    )
+    click.echo(f"✅ Template '{name}' created successfully!")
+
+
+@template.command("delete")
+@click.argument("name")
+def template_delete(name):
+    """Delete an event template."""
+    if delete_template(name):
+        click.echo(f"✅ Template '{name}' deleted successfully!")
+    else:
+        click.echo(f"❌ Template '{name}' not found.", err=True)
+        sys.exit(1)
+
+
+@template.command("show")
+@click.argument("name")
+def template_show(name):
+    """Show template details."""
+    template = get_template(name)
+    if not template:
+        click.echo(f"❌ Template '{name}' not found.", err=True)
+        sys.exit(1)
+    
+    click.echo(f"📅 Template: {name}")
+    if template.get("title"):
+        click.echo(f"   Title: {template['title']}")
+    if template.get("description"):
+        click.echo(f"   Description: {template['description']}")
+    if template.get("location"):
+        click.echo(f"   Location: {template['location']}")
+    if template.get("duration_minutes"):
+        click.echo(f"   Duration: {template['duration_minutes']} minutes")
+    if template.get("attendees"):
+        click.echo(f"   Attendees: {', '.join(template['attendees'])}")
+
+
+@cli.command()
+@click.option("--limit", "-l", default=10, type=int, help="Number of operations to show")
+def history(limit):
+    """Show recent operation history."""
+    operations = get_recent_operations(limit)
+    
+    if not operations:
+        click.echo("No operations in history.")
+        return
+    
+    click.echo(f"Recent operations (last {len(operations)}):\n")
+    for op in reversed(operations):
+        timestamp = op.get("timestamp", "")
+        op_type = op.get("type", "unknown")
+        details = op.get("details", {})
+        undoable = "✓" if op.get("undoable") else "✗"
+        
+        click.echo(f"{undoable} [{timestamp[:19]}] {op_type}")
+        if details:
+            for key, value in details.items():
+                if key not in ["event_id", "original"]:  # Skip internal IDs for cleaner display
+                    click.echo(f"   {key}: {value}")
+        click.echo()
+
+
+@cli.command()
+@_account_option
+@click.pass_context
+def undo(ctx, account):
+    """Undo the last undoable operation."""
+    account = account or ctx.obj.get("ACCOUNT")
+    
+    last_op = get_last_undoable_operation()
+    
+    if not last_op:
+        click.echo("❌ No undoable operation found.")
+        return
+    
+    op_type = last_op.get("type")
+    details = last_op.get("details", {})
+    undo_func = last_op.get("undo_func")
+    
+    click.echo(f"Undoing: {op_type} at {last_op.get('timestamp', '')[:19]}")
+    
+    try:
+        api = CalendarAPI(account)
+        
+        if op_type == "create" and undo_func == "delete":
+            event_id = details.get("event_id")
+            calendar = details.get("calendar", "primary")
+            if event_id:
+                api.delete_event(event_id, calendar_id=calendar)
+                click.echo(f"✅ Event {event_id} deleted (undone)")
+            else:
+                click.echo("❌ Cannot undo: missing event ID")
+        elif op_type == "update" and undo_func == "restore":
+            event_id = details.get("event_id")
+            calendar = details.get("calendar", "primary")
+            original = details.get("original")
+            if event_id and original:
+                api.update_event(event_id, calendar_id=calendar, **original)
+                click.echo(f"✅ Event {event_id} restored to previous state")
+            else:
+                click.echo("❌ Cannot undo: missing event data")
+        else:
+            click.echo(f"❌ Cannot undo operation type: {op_type}")
+    
+    except Exception as e:
+        click.echo(f"❌ Error undoing operation: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True, help="Shell type for completion script")
+def completion(shell):
+    """Generate shell completion script. Add to your shell config file."""
+    try:
+        from click.shell_completion import get_completion_script
+        
+        # Get the completion script
+        script = get_completion_script("google-calendar", "_GOOGLE_CALENDAR_COMPLETE", shell)
+        click.echo(script)
+        click.echo(f"\n# To install, run:", err=True)
+        if shell == "fish":
+            click.echo(f"# google-calendar completion --shell {shell} > ~/.config/fish/completions/google-calendar.fish", err=True)
+        else:
+            click.echo(f"# google-calendar completion --shell {shell} >> ~/.{shell}rc", err=True)
+    except ImportError:
+        click.echo("❌ Shell completion not available. Install click>=8.0", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error generating completion script: {e}", err=True)
         sys.exit(1)
 
 
