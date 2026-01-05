@@ -48,7 +48,7 @@ Google Calendar CLI uses Google's Calendar API to access your calendar. Your use
 
 ## Contact
 
-For questions about this privacy policy, please contact: [Your Email]
+For questions about this privacy policy, please contact: nitaiaharoni1@gmail.com
 
 ## Changes to This Policy
 
