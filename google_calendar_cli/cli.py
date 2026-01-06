@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from .auth import authenticate, get_credentials, check_auth
 from .api import CalendarAPI
-from .utils import format_datetime, get_today_start, get_week_start, get_week_end, parse_datetime, list_accounts, get_default_account, set_default_account
+from .utils import format_datetime, get_today_start, get_week_start, get_week_end, parse_datetime, list_accounts, remove_account, get_default_account, set_default_account, set_account_alias, remove_account_alias, get_account_aliases, resolve_account
 from .shared_auth import check_token_health, refresh_token
 from .config import get_preference, set_preference
 from .templates import list_templates, get_template, create_template, delete_template, render_template
@@ -15,7 +15,7 @@ from .history import add_operation, get_recent_operations, get_last_undoable_ope
 
 
 @click.group()
-@click.version_option(version="1.3.2")
+@click.version_option(version="1.4.0")
 @click.option("--account", "-a", help="Account name to use (default: current default account or GOOGLE_CALENDAR_ACCOUNT env var)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
@@ -72,19 +72,25 @@ def help_command(ctx, command):
 
 
 # Account option decorator
-_account_option = click.option("--account", "-a", help="Account name to use (default: current default account)")
+def _resolve_account_callback(ctx, param, value):
+    """Callback to resolve account aliases."""
+    if value is not None:
+        return resolve_account(value)
+    return value
+
+
+_account_option = click.option("--account", "-a", help="Account name or alias to use (default: current default account)", callback=_resolve_account_callback)
 
 
 @cli.command()
-@click.option("--account", "-a", help="Account name (optional, will use email if not provided)")
-def init(account):
+def init():
     """Initialize and authenticate with Google Calendar API."""
     click.echo("🔐 Setting up Google Calendar authentication...")
-    creds = authenticate(account)
+    creds = authenticate()
     
     if creds:
         try:
-            api = CalendarAPI(account)
+            api = CalendarAPI()
             profile = api.get_profile()
             
             # Fetch and cache user settings
@@ -106,10 +112,7 @@ def init(account):
             if settings.get('timezone'):
                 click.echo(f"   Timezone: {settings.get('timezone')}")
             
-            # Show account name if different from calendar ID
-            default_account = get_default_account()
-            if default_account and default_account != profile.get("id"):
-                click.echo(f"   Account name: {default_account}")
+            click.echo(f"\n💡 Tip: Use 'google-calendar alias <name>' to set a friendly alias for this account.")
         except Exception as e:
             click.echo(f"⚠️  Authentication saved but verification failed: {e}")
     else:
@@ -118,37 +121,136 @@ def init(account):
 
 @cli.command()
 def accounts():
-    """List all configured accounts."""
+    """List all configured accounts and aliases."""
     accounts_list = list_accounts()
+    aliases = get_account_aliases()
     default = get_default_account()
     
     if not accounts_list:
         click.echo("No accounts configured. Run 'google-calendar init' to add an account.")
         return
     
+    # Build reverse mapping: account -> list of aliases
+    account_aliases = {}
+    for alias_name, account_email in aliases.items():
+        if account_email not in account_aliases:
+            account_aliases[account_email] = []
+        account_aliases[account_email].append(alias_name)
+    
     click.echo(f"Configured accounts ({len(accounts_list)}):\n")
     for acc in accounts_list:
         marker = " (default)" if acc == default else ""
-        click.echo(f"  • {acc}{marker}")
+        alias_list = account_aliases.get(acc, [])
+        alias_str = f" (aliases: {', '.join(alias_list)})" if alias_list else ""
+        click.echo(f"  • {acc}{marker}{alias_str}")
     
     if default:
         click.echo(f"\nDefault account: {default}")
 
 
-@cli.command()
+@cli.command(name="remove-account")
 @click.argument("account_name")
-def use(account_name):
-    """Set default account to use."""
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
+def remove_account_cmd(account_name, force):
+    """Remove an account and delete its authentication token.
+    
+    Examples:
+        google-calendar remove-account test@example.com
+        google-calendar remove-account work --force
+    """
     accounts_list = list_accounts()
     
     if account_name not in accounts_list:
-        click.echo(f"❌ Error: Account '{account_name}' not found.")
-        click.echo(f"Available accounts: {', '.join(accounts_list)}")
-        click.echo("\nRun 'google-calendar init --account <name>' to add a new account.")
+        click.echo(f"❌ Account '{account_name}' not found.", err=True)
+        click.echo(f"\nAvailable accounts: {', '.join(accounts_list) if accounts_list else 'none'}", err=True)
         sys.exit(1)
     
-    set_default_account(account_name)
-    click.echo(f"✅ Default account set to: {account_name}")
+    if not force:
+        if not click.confirm(f"Remove account '{account_name}'? This will delete its authentication token."):
+            click.echo("Cancelled.")
+            return
+    
+    if remove_account(account_name):
+        click.echo(f"✅ Account '{account_name}' removed successfully.")
+        
+        # Show new default if changed
+        new_default = get_default_account()
+        if new_default:
+            click.echo(f"   New default account: {new_default}")
+        else:
+            click.echo("   No accounts remaining.")
+    else:
+        click.echo(f"❌ Failed to remove account '{account_name}'.", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("alias_name")
+@click.argument("account_email", required=False)
+@click.option("--remove", "-r", is_flag=True, help="Remove the alias")
+def alias(alias_name, account_email, remove):
+    """Set or remove an alias for an account.
+    
+    Examples:
+        google-calendar alias work nitai@company.com    # Set alias
+        google-calendar alias work --remove             # Remove alias
+        google-calendar alias work                      # Show what alias points to
+    """
+    aliases = get_account_aliases()
+    
+    if remove:
+        if remove_account_alias(alias_name):
+            click.echo(f"✅ Alias '{alias_name}' removed.")
+        else:
+            click.echo(f"❌ Alias '{alias_name}' not found.", err=True)
+            sys.exit(1)
+        return
+    
+    if account_email is None:
+        # Show what the alias points to
+        if alias_name in aliases:
+            click.echo(f"'{alias_name}' → {aliases[alias_name]}")
+        else:
+            click.echo(f"❌ Alias '{alias_name}' not found.", err=True)
+            # Suggest available aliases
+            if aliases:
+                click.echo(f"\nAvailable aliases: {', '.join(aliases.keys())}")
+            sys.exit(1)
+        return
+    
+    # Set the alias
+    if set_account_alias(alias_name, account_email):
+        click.echo(f"✅ Alias set: '{alias_name}' → {account_email}")
+    else:
+        click.echo(f"❌ Account '{account_email}' not found.", err=True)
+        accounts_list = list_accounts()
+        if accounts_list:
+            click.echo(f"\nAvailable accounts: {', '.join(accounts_list)}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("account_name")
+def use(account_name):
+    """Set default account to use. Accepts account email or alias."""
+    # Resolve alias to actual account
+    resolved = resolve_account(account_name)
+    accounts_list = list_accounts()
+    
+    if resolved not in accounts_list:
+        click.echo(f"❌ Error: Account '{account_name}' not found.")
+        click.echo(f"Available accounts: {', '.join(accounts_list)}")
+        aliases = get_account_aliases()
+        if aliases:
+            click.echo(f"Available aliases: {', '.join(aliases.keys())}")
+        click.echo("\nRun 'google-calendar init' to add a new account.")
+        sys.exit(1)
+    
+    set_default_account(resolved)
+    if resolved != account_name:
+        click.echo(f"✅ Default account set to: {resolved} (via alias '{account_name}')")
+    else:
+        click.echo(f"✅ Default account set to: {resolved}")
 
 
 @cli.group()
