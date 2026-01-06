@@ -528,6 +528,9 @@ class CalendarAPI:
         Returns:
             List of (start, end) datetime tuples representing available slots
         """
+        # Import timezone module with alias to avoid shadowing the timezone parameter
+        from datetime import timezone as tz_module
+        
         try:
             # Use email addresses as calendar IDs (primary calendar for each user)
             calendar_ids = attendee_emails.copy()
@@ -555,9 +558,9 @@ class CalendarAPI:
                             end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
                             # Ensure timezone-aware (API returns UTC)
                             if start_dt.tzinfo is None:
-                                start_dt = start_dt.replace(tzinfo=timezone.utc)
+                                start_dt = start_dt.replace(tzinfo=tz_module.utc)
                             if end_dt.tzinfo is None:
-                                end_dt = end_dt.replace(tzinfo=timezone.utc)
+                                end_dt = end_dt.replace(tzinfo=tz_module.utc)
                             all_busy_periods.append((start_dt, end_dt))
                         except ValueError:
                             continue
@@ -571,16 +574,16 @@ class CalendarAPI:
                 current_start, current_end = all_busy_periods[0]
                 # Ensure first period is timezone-aware
                 if current_start.tzinfo is None:
-                    current_start = current_start.replace(tzinfo=timezone.utc)
+                    current_start = current_start.replace(tzinfo=tz_module.utc)
                 if current_end.tzinfo is None:
-                    current_end = current_end.replace(tzinfo=timezone.utc)
+                    current_end = current_end.replace(tzinfo=tz_module.utc)
                 
                 for start, end in all_busy_periods[1:]:
                     # Ensure timezone-aware
                     if start.tzinfo is None:
-                        start = start.replace(tzinfo=timezone.utc)
+                        start = start.replace(tzinfo=tz_module.utc)
                     if end.tzinfo is None:
-                        end = end.replace(tzinfo=timezone.utc)
+                        end = end.replace(tzinfo=tz_module.utc)
                     
                     if start <= current_end:
                         # Overlapping or adjacent - merge
@@ -599,17 +602,17 @@ class CalendarAPI:
             try:
                 tz = ZoneInfo(timezone)
             except Exception:
-                tz = timezone.utc
+                tz = tz_module.utc
             
             # Ensure time_min and time_max are timezone-aware and convert to UTC
             if time_min.tzinfo is None:
-                time_min = time_min.replace(tzinfo=timezone.utc)
+                time_min = time_min.replace(tzinfo=tz_module.utc)
             else:
-                time_min = time_min.astimezone(timezone.utc)
+                time_min = time_min.astimezone(tz_module.utc)
             if time_max.tzinfo is None:
-                time_max = time_max.replace(tzinfo=timezone.utc)
+                time_max = time_max.replace(tzinfo=tz_module.utc)
             else:
-                time_max = time_max.astimezone(timezone.utc)
+                time_max = time_max.astimezone(tz_module.utc)
             
             # Convert time range to target timezone for day iteration
             time_min_local = time_min.astimezone(tz)
@@ -641,17 +644,17 @@ class CalendarAPI:
                     slot_end = slot_start + duration_delta
                     
                     # Convert back to UTC for comparison with busy periods
-                    slot_start_utc = slot_start.astimezone(timezone.utc)
-                    slot_end_utc = slot_end.astimezone(timezone.utc)
+                    slot_start_utc = slot_start.astimezone(tz_module.utc)
+                    slot_end_utc = slot_end.astimezone(tz_module.utc)
                     
                     # Check if this slot overlaps with any busy period
                     is_free = True
                     for busy_start, busy_end in merged_busy:
                         # Busy periods should already be timezone-aware from parsing, but check defensively
                         if busy_start.tzinfo is None:
-                            busy_start = busy_start.replace(tzinfo=timezone.utc)
+                            busy_start = busy_start.replace(tzinfo=tz_module.utc)
                         if busy_end.tzinfo is None:
-                            busy_end = busy_end.replace(tzinfo=timezone.utc)
+                            busy_end = busy_end.replace(tzinfo=tz_module.utc)
                         
                         # Check for overlap
                         if not (slot_end_utc <= busy_start or slot_start_utc >= busy_end):

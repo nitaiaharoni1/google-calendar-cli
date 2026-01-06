@@ -356,21 +356,23 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
                 sys.exit(1)
             
             # Ensure timezone-aware
+            from datetime import timezone as tz_module
             if time_min_dt.tzinfo is None:
-                time_min_dt = time_min_dt.replace(tzinfo=timezone.utc)
+                time_min_dt = time_min_dt.replace(tzinfo=tz_module.utc)
             else:
-                time_min_dt = time_min_dt.astimezone(timezone.utc)
+                time_min_dt = time_min_dt.astimezone(tz_module.utc)
             
             if time_max_dt.tzinfo is None:
-                time_max_dt = time_max_dt.replace(tzinfo=timezone.utc)
+                time_max_dt = time_max_dt.replace(tzinfo=tz_module.utc)
             else:
-                time_max_dt = time_max_dt.astimezone(timezone.utc)
+                time_max_dt = time_max_dt.astimezone(tz_module.utc)
             
             time_min = time_min_dt
             time_max = time_max_dt
         else:
             # Fall back to --days
-            time_min = datetime.now(timezone.utc)
+            from datetime import timezone as tz_module
+            time_min = datetime.now(tz_module.utc)
             time_max = time_min + timedelta(days=days)
         
         click.echo(f"Finding available times for {len(resolved_attendees)} attendee(s) ({duration} min meeting)...")
