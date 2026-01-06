@@ -7,7 +7,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from .auth import authenticate, get_credentials, check_auth
 from .api import CalendarAPI
-from .people import PeopleAPI
 from .utils import format_datetime, get_today_start, get_week_start, get_week_end, parse_datetime, list_accounts, get_default_account, set_default_account
 from .shared_auth import check_token_health, refresh_token
 from .config import get_preference, set_preference
@@ -295,6 +294,8 @@ def list(ctx, max, calendar, account):
 @_account_option
 def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
     """Find available meeting times when all attendees are free."""
+    # Store timezone parameter to avoid shadowing the timezone module
+    tz_str = timezone
     account = account or ctx.obj.get("ACCOUNT")
     
     if not attendees:
@@ -304,36 +305,8 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
     try:
         api = CalendarAPI(account)
         
-        # Resolve attendee names to email addresses
-        resolved_attendees = []
-        unresolved = []
-        
-        try:
-            people_api = PeopleAPI(account)
-            for attendee in attendees:
-                # If it looks like an email, use it directly
-                if '@' in attendee:
-                    resolved_attendees.append(attendee)
-                else:
-                    # Try to resolve as contact name
-                    email = people_api.get_contact_email(attendee)
-                    if email:
-                        resolved_attendees.append(email)
-                        if attendee != email:
-                            click.echo(f"ℹ️  Resolved '{attendee}' to {email}")
-                    else:
-                        # If not found, assume it's an email anyway (might be a partial email)
-                        resolved_attendees.append(attendee)
-                        unresolved.append(attendee)
-        except Exception as e:
-            # If People API fails, use attendees as-is (might not have scope)
-            click.echo(f"⚠️  Warning: Could not resolve contact names: {e}", err=True)
-            click.echo("   Using attendees as provided. Run 'google-calendar init' to enable contact resolution.")
-            resolved_attendees = list(attendees)
-        
-        if unresolved:
-            click.echo(f"⚠️  Warning: Could not resolve these names: {', '.join(unresolved)}")
-            click.echo("   Using them as-is (assuming they are email addresses)")
+        # Use attendees as provided (must be email addresses)
+        resolved_attendees = list(attendees)
         
         # Calculate time range
         if start or end:
@@ -356,23 +329,21 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
                 sys.exit(1)
             
             # Ensure timezone-aware
-            from datetime import timezone as tz_module
             if time_min_dt.tzinfo is None:
-                time_min_dt = time_min_dt.replace(tzinfo=tz_module.utc)
+                time_min_dt = time_min_dt.replace(tzinfo=timezone.utc)
             else:
-                time_min_dt = time_min_dt.astimezone(tz_module.utc)
+                time_min_dt = time_min_dt.astimezone(timezone.utc)
             
             if time_max_dt.tzinfo is None:
-                time_max_dt = time_max_dt.replace(tzinfo=tz_module.utc)
+                time_max_dt = time_max_dt.replace(tzinfo=timezone.utc)
             else:
-                time_max_dt = time_max_dt.astimezone(tz_module.utc)
+                time_max_dt = time_max_dt.astimezone(timezone.utc)
             
             time_min = time_min_dt
             time_max = time_max_dt
         else:
             # Fall back to --days
-            from datetime import timezone as tz_module
-            time_min = datetime.now(tz_module.utc)
+            time_min = datetime.now(timezone.utc)
             time_max = time_min + timedelta(days=days)
         
         click.echo(f"Finding available times for {len(resolved_attendees)} attendee(s) ({duration} min meeting)...")
@@ -388,7 +359,7 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
             working_hours_start=start_hour,
             working_hours_end=end_hour,
             exclude_weekends=exclude_weekends,
-            timezone=timezone
+            timezone=tz_str
         )
         
         if not available_slots:
@@ -416,45 +387,6 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
     
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
-        sys.exit(1)
-
-
-@cli.command()
-@click.option("--search", "-s", help="Search contacts by name or email")
-@click.option("--max", "-m", default=50, type=int, help="Maximum number of contacts to show (default: 50)")
-@click.pass_context
-@_account_option
-def contacts(ctx, search, max, account):
-    """List contacts from Google Contacts."""
-    account = account or ctx.obj.get("ACCOUNT")
-    
-    try:
-        people_api = PeopleAPI(account)
-        
-        if search:
-            click.echo(f"Searching contacts for '{search}'...\n")
-            contacts_list = people_api.search_contacts(search, max_results=max)
-        else:
-            click.echo("Listing contacts...\n")
-            contacts_list = people_api.list_contacts(max_results=max)
-        
-        if not contacts_list:
-            click.echo("No contacts found.")
-            return
-        
-        click.echo(f"Found {len(contacts_list)} contact(s):\n")
-        
-        for contact in contacts_list:
-            name = contact.get('name', 'Unknown')
-            email = contact.get('email', 'No email')
-            click.echo(f"  • {name}")
-            click.echo(f"    {email}")
-            click.echo()
-    
-    except Exception as e:
-        click.echo(f"❌ Error: {e}", err=True)
-        click.echo("   Note: Make sure you've authenticated with People API scope.")
-        click.echo("   Run 'google-calendar init' to re-authenticate.")
         sys.exit(1)
 
 
