@@ -5,7 +5,8 @@ from googleapiclient.errors import HttpError
 from .auth import get_credentials, check_auth
 from .utils import parse_datetime, format_datetime
 from .retry import with_retry
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Tuple
 
 
@@ -474,9 +475,19 @@ class CalendarAPI:
                 calendar_ids = ["primary"]
             
             if isinstance(time_min, datetime):
-                time_min = time_min.isoformat() + "Z"
+                if time_min.tzinfo is not None:
+                    # Convert to UTC, then format without offset
+                    time_min = time_min.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else:
+                    # Assume UTC for naive datetimes
+                    time_min = time_min.strftime("%Y-%m-%dT%H:%M:%SZ")
             if isinstance(time_max, datetime):
-                time_max = time_max.isoformat() + "Z"
+                if time_max.tzinfo is not None:
+                    # Convert to UTC, then format without offset
+                    time_max = time_max.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else:
+                    # Assume UTC for naive datetimes
+                    time_max = time_max.strftime("%Y-%m-%dT%H:%M:%SZ")
             
             body = {
                 "timeMin": time_min,
@@ -542,6 +553,11 @@ class CalendarAPI:
                         try:
                             start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
                             end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                            # Ensure timezone-aware (API returns UTC)
+                            if start_dt.tzinfo is None:
+                                start_dt = start_dt.replace(tzinfo=timezone.utc)
+                            if end_dt.tzinfo is None:
+                                end_dt = end_dt.replace(tzinfo=timezone.utc)
                             all_busy_periods.append((start_dt, end_dt))
                         except ValueError:
                             continue
@@ -553,7 +569,19 @@ class CalendarAPI:
             merged_busy = []
             if all_busy_periods:
                 current_start, current_end = all_busy_periods[0]
+                # Ensure first period is timezone-aware
+                if current_start.tzinfo is None:
+                    current_start = current_start.replace(tzinfo=timezone.utc)
+                if current_end.tzinfo is None:
+                    current_end = current_end.replace(tzinfo=timezone.utc)
+                
                 for start, end in all_busy_periods[1:]:
+                    # Ensure timezone-aware
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=timezone.utc)
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=timezone.utc)
+                    
                     if start <= current_end:
                         # Overlapping or adjacent - merge
                         current_end = max(current_end, end)
@@ -563,42 +591,87 @@ class CalendarAPI:
                         current_start, current_end = start, end
                 merged_busy.append((current_start, current_end))
             
-            # Find free slots by inverting busy periods
+            # Find all free slots by generating potential slots and filtering
             available_slots = []
             duration_delta = timedelta(minutes=duration_minutes)
             
-            # Start from time_min
-            current_time = time_min
+            # Get timezone for working hours conversion
+            try:
+                tz = ZoneInfo(timezone)
+            except Exception:
+                tz = timezone.utc
             
-            for busy_start, busy_end in merged_busy:
-                # Check if there's a gap before this busy period
-                if current_time + duration_delta <= busy_start:
-                    # Found a free slot
-                    slot_start = current_time
+            # Ensure time_min and time_max are timezone-aware and convert to UTC
+            if time_min.tzinfo is None:
+                time_min = time_min.replace(tzinfo=timezone.utc)
+            else:
+                time_min = time_min.astimezone(timezone.utc)
+            if time_max.tzinfo is None:
+                time_max = time_max.replace(tzinfo=timezone.utc)
+            else:
+                time_max = time_max.astimezone(timezone.utc)
+            
+            # Convert time range to target timezone for day iteration
+            time_min_local = time_min.astimezone(tz)
+            time_max_local = time_max.astimezone(tz)
+            
+            # Generate all potential slots within the time range
+            current_date = time_min_local.date()
+            end_date = time_max_local.date()
+            
+            while current_date <= end_date:
+                # Skip weekends if excluded
+                if exclude_weekends and current_date.weekday() >= 5:
+                    current_date += timedelta(days=1)
+                    continue
+                
+                # Generate slots for this day within working hours
+                day_start = datetime.combine(current_date, datetime.min.time().replace(hour=working_hours_start), tzinfo=tz)
+                day_end = datetime.combine(current_date, datetime.min.time().replace(hour=working_hours_end), tzinfo=tz)
+                
+                # Ensure day_start is within our time range
+                if day_start < time_min_local:
+                    day_start = time_min_local
+                if day_end > time_max_local:
+                    day_end = time_max_local
+                
+                # Generate slots starting from day_start, incrementing by duration
+                slot_start = day_start
+                while slot_start + duration_delta <= day_end:
                     slot_end = slot_start + duration_delta
                     
-                    # Apply working hours and weekend filters
-                    if self._is_valid_slot(
-                        slot_start, slot_end,
-                        working_hours_start, working_hours_end,
-                        exclude_weekends, timezone
-                    ):
-                        available_slots.append((slot_start, slot_end))
+                    # Convert back to UTC for comparison with busy periods
+                    slot_start_utc = slot_start.astimezone(timezone.utc)
+                    slot_end_utc = slot_end.astimezone(timezone.utc)
+                    
+                    # Check if this slot overlaps with any busy period
+                    is_free = True
+                    for busy_start, busy_end in merged_busy:
+                        # Busy periods should already be timezone-aware from parsing, but check defensively
+                        if busy_start.tzinfo is None:
+                            busy_start = busy_start.replace(tzinfo=timezone.utc)
+                        if busy_end.tzinfo is None:
+                            busy_end = busy_end.replace(tzinfo=timezone.utc)
+                        
+                        # Check for overlap
+                        if not (slot_end_utc <= busy_start or slot_start_utc >= busy_end):
+                            is_free = False
+                            break
+                    
+                    # Also check if slot is within our time range (time_min/time_max are already UTC)
+                    if slot_start_utc < time_min or slot_end_utc > time_max:
+                        is_free = False
+                    
+                    if is_free:
+                        available_slots.append((slot_start_utc, slot_end_utc))
+                    
+                    # Move to next slot (increment by duration)
+                    slot_start += duration_delta
                 
-                # Move current_time to end of busy period
-                current_time = max(current_time, busy_end)
+                current_date += timedelta(days=1)
             
-            # Check for slot after last busy period
-            if current_time + duration_delta <= time_max:
-                slot_start = current_time
-                slot_end = slot_start + duration_delta
-                
-                if self._is_valid_slot(
-                    slot_start, slot_end,
-                    working_hours_start, working_hours_end,
-                    exclude_weekends, timezone
-                ):
-                    available_slots.append((slot_start, slot_end))
+            # Sort slots by start time
+            available_slots.sort(key=lambda x: x[0])
             
             return available_slots
             
@@ -612,44 +685,51 @@ class CalendarAPI:
         working_hours_start: int,
         working_hours_end: int,
         exclude_weekends: bool,
-        timezone: str
+        timezone_str: str
     ) -> bool:
         """
         Check if a time slot is valid based on constraints.
         
         Args:
-            start: Slot start time
-            end: Slot end time
+            start: Slot start time (timezone-aware datetime)
+            end: Slot end time (timezone-aware datetime)
             working_hours_start: Start of working hours (0-23)
             working_hours_end: End of working hours (0-23)
             exclude_weekends: Whether to exclude weekends
-            timezone: Timezone string
+            timezone_str: Timezone string (e.g., "America/Los_Angeles", "UTC")
         
         Returns:
             True if slot is valid, False otherwise
         """
+        try:
+            # Convert to target timezone for working hours check
+            tz = ZoneInfo(timezone_str)
+            start_local = start.astimezone(tz)
+            end_local = end.astimezone(tz)
+        except Exception:
+            # Fallback to UTC if timezone is invalid
+            tz = timezone.utc
+            start_local = start.astimezone(tz) if start.tzinfo else start.replace(tzinfo=tz)
+            end_local = end.astimezone(tz) if end.tzinfo else end.replace(tzinfo=tz)
+        
         # Check weekend exclusion
         if exclude_weekends:
-            weekday = start.weekday()  # 0=Monday, 6=Sunday
+            weekday = start_local.weekday()  # 0=Monday, 6=Sunday
             if weekday >= 5:  # Saturday or Sunday
                 return False
         
-        # Check working hours
-        # Note: This is a simplified check - assumes UTC or local time
-        # For proper timezone handling, would need pytz or zoneinfo
-        start_hour = start.hour
-        end_hour = end.hour
+        # Check working hours in the target timezone
+        start_hour = start_local.hour
+        end_hour = end_local.hour
         
         # Slot must start at or after working hours start
-        # Slot must end at or before working hours end
         if start_hour < working_hours_start:
             return False
         
-        # Check if end time is within working hours
-        # If end hour is same as start hour, check minutes
+        # Slot must end at or before working hours end
         if end_hour > working_hours_end:
             return False
-        elif end_hour == working_hours_end and end.minute > 0:
+        elif end_hour == working_hours_end and end_local.minute > 0:
             return False
         
         return True

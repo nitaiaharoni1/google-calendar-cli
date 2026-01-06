@@ -4,9 +4,10 @@ import click
 import sys
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .auth import authenticate, get_credentials, check_auth
 from .api import CalendarAPI
+from .people import PeopleAPI
 from .utils import format_datetime, get_today_start, get_week_start, get_week_end, parse_datetime, list_accounts, get_default_account, set_default_account
 from .shared_auth import check_token_health, refresh_token
 from .config import get_preference, set_preference
@@ -282,15 +283,17 @@ def list(ctx, max, calendar, account):
 @cli.command(name="find-time")
 @click.argument("attendees", nargs=-1, required=True)
 @click.option("--duration", "-d", default=30, type=int, help="Meeting duration in minutes (default: 30)")
-@click.option("--days", default=7, type=int, help="Days to search ahead (default: 7)")
+@click.option("--days", default=7, type=int, help="Days to search ahead (default: 7, ignored if --start/--end provided)")
+@click.option("--start", "-s", help="Start date/time (flexible format, e.g., 'next Monday', '2026-01-15', 'Monday 9am')")
+@click.option("--end", "-e", help="End date/time (flexible format, e.g., 'next Friday', '2026-01-20', 'Friday 6pm')")
 @click.option("--start-hour", default=9, type=int, help="Working hours start (0-23, default: 9)")
 @click.option("--end-hour", default=18, type=int, help="Working hours end (0-23, default: 18)")
 @click.option("--exclude-weekends/--include-weekends", default=True, help="Exclude weekends (default: True)")
 @click.option("--max-results", "-m", default=10, type=int, help="Maximum number of slots to show (default: 10)")
 @click.option("--timezone", "-t", default="UTC", help="Timezone (default: UTC)")
-@_account_option
 @click.pass_context
-def find_time(ctx, attendees, duration, days, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
+@_account_option
+def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
     """Find available meeting times when all attendees are free."""
     account = account or ctx.obj.get("ACCOUNT")
     
@@ -301,17 +304,82 @@ def find_time(ctx, attendees, duration, days, start_hour, end_hour, exclude_week
     try:
         api = CalendarAPI(account)
         
-        # Calculate time range
-        time_min = datetime.utcnow()
-        time_max = time_min + timedelta(days=days)
+        # Resolve attendee names to email addresses
+        resolved_attendees = []
+        unresolved = []
         
-        click.echo(f"Finding available times for {len(attendees)} attendee(s) ({duration} min meeting)...")
+        try:
+            people_api = PeopleAPI(account)
+            for attendee in attendees:
+                # If it looks like an email, use it directly
+                if '@' in attendee:
+                    resolved_attendees.append(attendee)
+                else:
+                    # Try to resolve as contact name
+                    email = people_api.get_contact_email(attendee)
+                    if email:
+                        resolved_attendees.append(email)
+                        if attendee != email:
+                            click.echo(f"ℹ️  Resolved '{attendee}' to {email}")
+                    else:
+                        # If not found, assume it's an email anyway (might be a partial email)
+                        resolved_attendees.append(attendee)
+                        unresolved.append(attendee)
+        except Exception as e:
+            # If People API fails, use attendees as-is (might not have scope)
+            click.echo(f"⚠️  Warning: Could not resolve contact names: {e}", err=True)
+            click.echo("   Using attendees as provided. Run 'google-calendar init' to enable contact resolution.")
+            resolved_attendees = list(attendees)
+        
+        if unresolved:
+            click.echo(f"⚠️  Warning: Could not resolve these names: {', '.join(unresolved)}")
+            click.echo("   Using them as-is (assuming they are email addresses)")
+        
+        # Calculate time range
+        if start or end:
+            # Use --start/--end if provided
+            if not start:
+                click.echo("❌ Error: --start is required when --end is provided.", err=True)
+                sys.exit(1)
+            if not end:
+                click.echo("❌ Error: --end is required when --start is provided.", err=True)
+                sys.exit(1)
+            
+            time_min_dt = parse_datetime(start)
+            time_max_dt = parse_datetime(end)
+            
+            if not time_min_dt:
+                click.echo(f"❌ Error: Could not parse start time: {start}", err=True)
+                sys.exit(1)
+            if not time_max_dt:
+                click.echo(f"❌ Error: Could not parse end time: {end}", err=True)
+                sys.exit(1)
+            
+            # Ensure timezone-aware
+            if time_min_dt.tzinfo is None:
+                time_min_dt = time_min_dt.replace(tzinfo=timezone.utc)
+            else:
+                time_min_dt = time_min_dt.astimezone(timezone.utc)
+            
+            if time_max_dt.tzinfo is None:
+                time_max_dt = time_max_dt.replace(tzinfo=timezone.utc)
+            else:
+                time_max_dt = time_max_dt.astimezone(timezone.utc)
+            
+            time_min = time_min_dt
+            time_max = time_max_dt
+        else:
+            # Fall back to --days
+            time_min = datetime.now(timezone.utc)
+            time_max = time_min + timedelta(days=days)
+        
+        click.echo(f"Finding available times for {len(resolved_attendees)} attendee(s) ({duration} min meeting)...")
         click.echo(f"Searching from {format_datetime(time_min)} to {format_datetime(time_max)}")
         click.echo()
         
         # Find available slots
         available_slots = api.find_available_slots(
-            attendee_emails=list(attendees),
+            attendee_emails=resolved_attendees,
             duration_minutes=duration,
             time_min=time_min,
             time_max=time_max,
@@ -332,7 +400,10 @@ def find_time(ctx, attendees, duration, days, start_hour, end_hour, exclude_week
         # Limit results
         available_slots = available_slots[:max_results]
         
-        click.echo(f"Available slots in the next {days} days:\n")
+        if start and end:
+            click.echo(f"Available slots from {format_datetime(time_min)} to {format_datetime(time_max)}:\n")
+        else:
+            click.echo(f"Available slots in the next {days} days:\n")
         
         for i, (slot_start, slot_end) in enumerate(available_slots, 1):
             start_str = format_datetime(slot_start)
@@ -343,6 +414,45 @@ def find_time(ctx, attendees, duration, days, start_hour, end_hour, exclude_week
     
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--search", "-s", help="Search contacts by name or email")
+@click.option("--max", "-m", default=50, type=int, help="Maximum number of contacts to show (default: 50)")
+@click.pass_context
+@_account_option
+def contacts(ctx, search, max, account):
+    """List contacts from Google Contacts."""
+    account = account or ctx.obj.get("ACCOUNT")
+    
+    try:
+        people_api = PeopleAPI(account)
+        
+        if search:
+            click.echo(f"Searching contacts for '{search}'...\n")
+            contacts_list = people_api.search_contacts(search, max_results=max)
+        else:
+            click.echo("Listing contacts...\n")
+            contacts_list = people_api.list_contacts(max_results=max)
+        
+        if not contacts_list:
+            click.echo("No contacts found.")
+            return
+        
+        click.echo(f"Found {len(contacts_list)} contact(s):\n")
+        
+        for contact in contacts_list:
+            name = contact.get('name', 'Unknown')
+            email = contact.get('email', 'No email')
+            click.echo(f"  • {name}")
+            click.echo(f"    {email}")
+            click.echo()
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        click.echo("   Note: Make sure you've authenticated with People API scope.")
+        click.echo("   Run 'google-calendar init' to re-authenticate.")
         sys.exit(1)
 
 
@@ -874,12 +984,41 @@ def search(ctx, query, calendar, max, account):
 @click.pass_context
 @_account_option
 def freebusy(ctx, time_min, time_max, calendar, account):
-    """Query free/busy information for calendars."""
+    """Query free/busy information for calendars.
+    
+    Time arguments support flexible formats:
+    - ISO format: '2026-01-15T09:00:00Z'
+    - Date only: '2026-01-15'
+    - Natural language: 'next Monday', 'Monday 9am', 'tomorrow'
+    """
     account = account or ctx.obj.get('ACCOUNT')
     try:
         api = CalendarAPI(account)
+        
+        # Parse time arguments with flexible format support
+        time_min_dt = parse_datetime(time_min)
+        time_max_dt = parse_datetime(time_max)
+        
+        if not time_min_dt:
+            click.echo(f"❌ Error: Could not parse start time: {time_min}", err=True)
+            sys.exit(1)
+        if not time_max_dt:
+            click.echo(f"❌ Error: Could not parse end time: {time_max}", err=True)
+            sys.exit(1)
+        
+        # Ensure timezone-aware (convert to UTC)
+        if time_min_dt.tzinfo is None:
+            time_min_dt = time_min_dt.replace(tzinfo=timezone.utc)
+        else:
+            time_min_dt = time_min_dt.astimezone(timezone.utc)
+        
+        if time_max_dt.tzinfo is None:
+            time_max_dt = time_max_dt.replace(tzinfo=timezone.utc)
+        else:
+            time_max_dt = time_max_dt.astimezone(timezone.utc)
+        
         calendar_ids = list(calendar) if calendar else None
-        result = api.freebusy_query(time_min, time_max, calendar_ids=calendar_ids)
+        result = api.freebusy_query(time_min_dt, time_max_dt, calendar_ids=calendar_ids)
         
         calendars = result.get("calendars", {})
         click.echo("Free/Busy Information:\n")
