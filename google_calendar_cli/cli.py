@@ -294,8 +294,9 @@ def list(ctx, max, calendar, account):
 @_account_option
 def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
     """Find available meeting times when all attendees are free."""
-    # Store timezone parameter to avoid shadowing the timezone module
-    tz_str = timezone
+    # Import timezone module with alias since parameter 'timezone' shadows it
+    from datetime import timezone as tz_module
+    tz_str = timezone  # Store the timezone parameter (string)
     account = account or ctx.obj.get("ACCOUNT")
     
     if not attendees:
@@ -306,7 +307,8 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
         api = CalendarAPI(account)
         
         # Use attendees as provided (must be email addresses)
-        resolved_attendees = list(attendees)
+        # Note: can't use list() here as the 'list' command shadows the built-in
+        resolved_attendees = [*attendees]
         
         # Calculate time range
         if start or end:
@@ -330,20 +332,20 @@ def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, 
             
             # Ensure timezone-aware
             if time_min_dt.tzinfo is None:
-                time_min_dt = time_min_dt.replace(tzinfo=timezone.utc)
+                time_min_dt = time_min_dt.replace(tzinfo=tz_module.utc)
             else:
-                time_min_dt = time_min_dt.astimezone(timezone.utc)
+                time_min_dt = time_min_dt.astimezone(tz_module.utc)
             
             if time_max_dt.tzinfo is None:
-                time_max_dt = time_max_dt.replace(tzinfo=timezone.utc)
+                time_max_dt = time_max_dt.replace(tzinfo=tz_module.utc)
             else:
-                time_max_dt = time_max_dt.astimezone(timezone.utc)
+                time_max_dt = time_max_dt.astimezone(tz_module.utc)
             
             time_min = time_min_dt
             time_max = time_max_dt
         else:
             # Fall back to --days
-            time_min = datetime.now(timezone.utc)
+            time_min = datetime.now(tz_module.utc)
             time_max = time_min + timedelta(days=days)
         
         click.echo(f"Finding available times for {len(resolved_attendees)} attendee(s) ({duration} min meeting)...")
@@ -477,7 +479,7 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
             description = template_data.get("description") or description
             location = template_data.get("location") or location
             if template_data.get("attendees"):
-                attendee = list(attendee) + template_data.get("attendees", [])
+                attendee = [*attendee] + template_data.get("attendees", [])
         except Exception as e:
             click.echo(f"❌ Error loading template: {e}", err=True)
             sys.exit(1)
@@ -527,7 +529,7 @@ def create(ctx, title, start, end, description, location, attendee, recurrence, 
             description=description,
             location=location,
             calendar_id=calendar,
-            attendees=list(attendee) if attendee else None,
+            attendees=[*attendee] if attendee else None,
             recurrence=recurrence_list,
             reminders=reminders,
             timezone=timezone,
@@ -620,7 +622,7 @@ def update(ctx, event_id, title, start, end, description, location, attendee, re
             description=description,
             location=location,
             calendar_id=calendar,
-            attendees=list(attendee) if attendee else None,
+            attendees=[*attendee] if attendee else None,
             recurrence=recurrence_list,
             reminders=reminders,
             timezone=timezone,
@@ -951,7 +953,7 @@ def freebusy(ctx, time_min, time_max, calendar, account):
         else:
             time_max_dt = time_max_dt.astimezone(timezone.utc)
         
-        calendar_ids = list(calendar) if calendar else None
+        calendar_ids = [*calendar] if calendar else None
         result = api.freebusy_query(time_min_dt, time_max_dt, calendar_ids=calendar_ids)
         
         calendars = result.get("calendars", {})
@@ -1296,7 +1298,7 @@ def template_create(name, title, description, location, duration, attendee):
         description=description,
         location=location,
         duration_minutes=duration,
-        attendees=list(attendee) if attendee else None
+        attendees=[*attendee] if attendee else None
     )
     click.echo(f"✅ Template '{name}' created successfully!")
 
