@@ -15,7 +15,7 @@ from .history import add_operation, get_recent_operations, get_last_undoable_ope
 
 
 @click.group()
-@click.version_option(version="1.3.1")
+@click.version_option(version="1.3.2")
 @click.option("--account", "-a", help="Account name to use (default: current default account or GOOGLE_CALENDAR_ACCOUNT env var)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
@@ -86,9 +86,25 @@ def init(account):
         try:
             api = CalendarAPI(account)
             profile = api.get_profile()
+            
+            # Fetch and cache user settings
+            settings = api.get_user_settings()
+            if settings.get('timezone'):
+                set_preference('timezone', settings['timezone'])
+            if settings.get('dateFieldOrder'):
+                set_preference('date_format', settings['dateFieldOrder'])
+            if settings.get('weekStart'):
+                set_preference('week_start', settings['weekStart'])
+            
+            # Cache user email from primary calendar
+            if profile.get('id'):
+                set_preference('user_email', profile.get('id'))
+            
             click.echo(f"✅ Authenticated successfully!")
             if profile.get("summary"):
                 click.echo(f"   Primary calendar: {profile.get('summary')}")
+            if settings.get('timezone'):
+                click.echo(f"   Timezone: {settings.get('timezone')}")
             
             # Show account name if different from calendar ID
             default_account = get_default_account()
@@ -223,6 +239,15 @@ def me(ctx, account):
             click.echo(f"📅 Primary Calendar: {profile.get('summary', 'Unknown')}")
             click.echo(f"   ID: {profile.get('id', 'N/A')}")
             click.echo(f"   Timezone: {profile.get('timeZone', 'N/A')}")
+            
+            # Show cached settings
+            cached_tz = get_preference('timezone')
+            if cached_tz and cached_tz != profile.get('timeZone'):
+                click.echo(f"   Cached Timezone: {cached_tz}")
+            
+            date_format = get_preference('date_format')
+            if date_format:
+                click.echo(f"   Date Format: {date_format}")
         else:
             click.echo("No primary calendar found.")
     except Exception as e:
@@ -289,14 +314,15 @@ def list(ctx, max, calendar, account):
 @click.option("--end-hour", default=18, type=int, help="Working hours end (0-23, default: 18)")
 @click.option("--exclude-weekends/--include-weekends", default=True, help="Exclude weekends (default: True)")
 @click.option("--max-results", "-m", default=10, type=int, help="Maximum number of slots to show (default: 10)")
-@click.option("--timezone", "-t", default="UTC", help="Timezone (default: UTC)")
+@click.option("--timezone", "-t", default=None, help="Timezone (default: from your calendar settings)")
 @click.pass_context
 @_account_option
 def find_time(ctx, attendees, duration, days, start, end, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
     """Find available meeting times when all attendees are free."""
     # Import timezone module with alias since parameter 'timezone' shadows it
     from datetime import timezone as tz_module
-    tz_str = timezone  # Store the timezone parameter (string)
+    # Use cached timezone if not provided
+    tz_str = timezone if timezone is not None else get_preference('timezone', 'UTC')
     account = account or ctx.obj.get("ACCOUNT")
     
     if not attendees:
@@ -443,7 +469,7 @@ def get(ctx, event_id, calendar, account):
 @click.option("--recurrence", "-r", help="Recurrence rule (RRULE format, e.g., 'FREQ=WEEKLY;COUNT=5')")
 @click.option("--reminder-email", help="Email reminder minutes before (e.g., '1440' for 24 hours)")
 @click.option("--reminder-popup", help="Popup reminder minutes before (e.g., '10')")
-@click.option("--timezone", "-t", default="UTC", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.option("--timezone", "-t", default=None, help="Timezone (default: from your calendar settings)")
 @click.option("--color", help="Event color ID (use 'colors' command to see available colors)")
 @click.option("--meet", is_flag=True, help="Add Google Meet video conference link")
 @click.option("--calendar", "-c", default="primary", help="Calendar ID")
@@ -455,6 +481,10 @@ def get(ctx, event_id, calendar, account):
 def create(ctx, title, start, end, description, location, attendee, recurrence, reminder_email, reminder_popup, timezone, color, meet, calendar, template, interactive, dry_run, account):
     """Create a new event."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    # Use cached timezone if not provided
+    if timezone is None:
+        timezone = get_preference('timezone', 'UTC')
     
     # Interactive mode - prompt for missing fields
     if interactive or not title:
@@ -1002,13 +1032,18 @@ def get_calendar(ctx, calendar_id, account):
 @cli.command()
 @click.argument("summary")
 @click.option("--description", "-d", help="Calendar description")
-@click.option("--timezone", "-t", help="Timezone (e.g., 'America/Los_Angeles')")
+@click.option("--timezone", "-t", help="Timezone (default: from your calendar settings)")
 @click.option("--color", help="Calendar color ID (use 'colors' command to see available colors)")
 @click.pass_context
 @_account_option
 def create_calendar(ctx, summary, description, timezone, color, account):
     """Create a new calendar."""
     account = account or ctx.obj.get('ACCOUNT')
+    
+    # Use cached timezone if not provided
+    if timezone is None:
+        timezone = get_preference('timezone', 'UTC')
+    
     try:
         api = CalendarAPI(account)
         calendar = api.create_calendar(summary, description=description, timezone=timezone, color_id=color)

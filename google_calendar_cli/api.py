@@ -42,6 +42,19 @@ class CalendarAPI:
             raise Exception(f"Failed to get profile: {error}")
     
     @with_retry()
+    def get_user_settings(self):
+        """Fetch all user settings from Google Calendar."""
+        try:
+            settings = self.service.settings().list().execute()
+            result = {}
+            for item in settings.get('items', []):
+                # Values come quoted, e.g., '"America/Los_Angeles"'
+                result[item['id']] = item['value'].strip('"')
+            return result
+        except HttpError:
+            return {}
+    
+    @with_retry()
     def list_calendars(self):
         """List all calendars."""
         try:

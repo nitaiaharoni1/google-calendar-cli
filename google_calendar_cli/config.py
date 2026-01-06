@@ -18,7 +18,10 @@ def ensure_preferences_file():
             "default_output_format": "table",
             "default_max_results": 10,
             "timezone": "UTC",
+            "date_format": "MDY",
+            "week_start": "0",
             "default_calendar": "primary",
+            "user_email": None,
             "verbose": False
         }
         # Write directly to avoid recursion
@@ -59,7 +62,10 @@ def get_default_preferences():
         "default_output_format": "table",
         "default_max_results": 10,
         "timezone": "UTC",
+        "date_format": "MDY",
+        "week_start": "0",
         "default_calendar": "primary",
+        "user_email": None,
         "verbose": False
     }
 
