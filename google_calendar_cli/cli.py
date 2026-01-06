@@ -15,7 +15,7 @@ from .history import add_operation, get_recent_operations, get_last_undoable_ope
 
 
 @click.group()
-@click.version_option(version="1.1.0")
+@click.version_option(version="1.2.0")
 @click.option("--account", "-a", help="Account name to use (default: current default account or GOOGLE_CALENDAR_ACCOUNT env var)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
@@ -273,6 +273,73 @@ def list(ctx, max, calendar, account):
             if location:
                 click.echo(f"   Location: {location}")
             click.echo()
+    
+    except Exception as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command(name="find-time")
+@click.argument("attendees", nargs=-1, required=True)
+@click.option("--duration", "-d", default=30, type=int, help="Meeting duration in minutes (default: 30)")
+@click.option("--days", default=7, type=int, help="Days to search ahead (default: 7)")
+@click.option("--start-hour", default=9, type=int, help="Working hours start (0-23, default: 9)")
+@click.option("--end-hour", default=18, type=int, help="Working hours end (0-23, default: 18)")
+@click.option("--exclude-weekends/--include-weekends", default=True, help="Exclude weekends (default: True)")
+@click.option("--max-results", "-m", default=10, type=int, help="Maximum number of slots to show (default: 10)")
+@click.option("--timezone", "-t", default="UTC", help="Timezone (default: UTC)")
+@_account_option
+@click.pass_context
+def find_time(ctx, attendees, duration, days, start_hour, end_hour, exclude_weekends, max_results, timezone, account):
+    """Find available meeting times when all attendees are free."""
+    account = account or ctx.obj.get("ACCOUNT")
+    
+    if not attendees:
+        click.echo("❌ Error: At least one attendee email is required.", err=True)
+        sys.exit(1)
+    
+    try:
+        api = CalendarAPI(account)
+        
+        # Calculate time range
+        time_min = datetime.utcnow()
+        time_max = time_min + timedelta(days=days)
+        
+        click.echo(f"Finding available times for {len(attendees)} attendee(s) ({duration} min meeting)...")
+        click.echo(f"Searching from {format_datetime(time_min)} to {format_datetime(time_max)}")
+        click.echo()
+        
+        # Find available slots
+        available_slots = api.find_available_slots(
+            attendee_emails=list(attendees),
+            duration_minutes=duration,
+            time_min=time_min,
+            time_max=time_max,
+            working_hours_start=start_hour,
+            working_hours_end=end_hour,
+            exclude_weekends=exclude_weekends,
+            timezone=timezone
+        )
+        
+        if not available_slots:
+            click.echo("❌ No available time slots found in the specified range.")
+            click.echo("   Try:")
+            click.echo("   - Increasing --days")
+            click.echo("   - Adjusting --start-hour and --end-hour")
+            click.echo("   - Using --include-weekends")
+            sys.exit(1)
+        
+        # Limit results
+        available_slots = available_slots[:max_results]
+        
+        click.echo(f"Available slots in the next {days} days:\n")
+        
+        for i, (slot_start, slot_end) in enumerate(available_slots, 1):
+            start_str = format_datetime(slot_start)
+            end_str = format_datetime(slot_end)
+            click.echo(f"  {i}. {start_str} - {end_str}")
+        
+        click.echo()
     
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)

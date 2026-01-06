@@ -6,6 +6,7 @@ from .auth import get_credentials, check_auth
 from .utils import parse_datetime, format_datetime
 from .retry import with_retry
 from datetime import datetime, timedelta
+from typing import List, Tuple
 
 
 class CalendarAPI:
@@ -487,6 +488,171 @@ class CalendarAPI:
             return freebusy
         except HttpError as error:
             raise Exception(f"Failed to query freebusy: {error}")
+    
+    @with_retry()
+    def find_available_slots(
+        self,
+        attendee_emails: List[str],
+        duration_minutes: int,
+        time_min: datetime,
+        time_max: datetime,
+        working_hours_start: int = 9,
+        working_hours_end: int = 18,
+        exclude_weekends: bool = True,
+        timezone: str = "UTC"
+    ) -> List[Tuple[datetime, datetime]]:
+        """
+        Find available time slots when all attendees are free.
+        
+        Args:
+            attendee_emails: List of email addresses to check availability for
+            duration_minutes: Duration of the meeting in minutes
+            time_min: Start of search window (datetime)
+            time_max: End of search window (datetime)
+            working_hours_start: Start of working hours (0-23, default: 9)
+            working_hours_end: End of working hours (0-23, default: 18)
+            exclude_weekends: Whether to exclude weekends (default: True)
+            timezone: Timezone string (default: "UTC")
+        
+        Returns:
+            List of (start, end) datetime tuples representing available slots
+        """
+        try:
+            # Use email addresses as calendar IDs (primary calendar for each user)
+            calendar_ids = attendee_emails.copy()
+            
+            # Query FreeBusy for all attendees
+            freebusy_result = self.freebusy_query(time_min, time_max, calendar_ids)
+            
+            # Collect all busy periods from all calendars
+            all_busy_periods = []
+            calendars = freebusy_result.get("calendars", {})
+            
+            for cal_id, cal_data in calendars.items():
+                errors = cal_data.get("errors", [])
+                if errors:
+                    # Log but continue - some calendars may not be accessible
+                    continue
+                
+                busy_periods = cal_data.get("busy", [])
+                for period in busy_periods:
+                    start_str = period.get("start")
+                    end_str = period.get("end")
+                    if start_str and end_str:
+                        try:
+                            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                            all_busy_periods.append((start_dt, end_dt))
+                        except ValueError:
+                            continue
+            
+            # Sort busy periods by start time
+            all_busy_periods.sort(key=lambda x: x[0])
+            
+            # Merge overlapping busy periods
+            merged_busy = []
+            if all_busy_periods:
+                current_start, current_end = all_busy_periods[0]
+                for start, end in all_busy_periods[1:]:
+                    if start <= current_end:
+                        # Overlapping or adjacent - merge
+                        current_end = max(current_end, end)
+                    else:
+                        # Gap - save current and start new
+                        merged_busy.append((current_start, current_end))
+                        current_start, current_end = start, end
+                merged_busy.append((current_start, current_end))
+            
+            # Find free slots by inverting busy periods
+            available_slots = []
+            duration_delta = timedelta(minutes=duration_minutes)
+            
+            # Start from time_min
+            current_time = time_min
+            
+            for busy_start, busy_end in merged_busy:
+                # Check if there's a gap before this busy period
+                if current_time + duration_delta <= busy_start:
+                    # Found a free slot
+                    slot_start = current_time
+                    slot_end = slot_start + duration_delta
+                    
+                    # Apply working hours and weekend filters
+                    if self._is_valid_slot(
+                        slot_start, slot_end,
+                        working_hours_start, working_hours_end,
+                        exclude_weekends, timezone
+                    ):
+                        available_slots.append((slot_start, slot_end))
+                
+                # Move current_time to end of busy period
+                current_time = max(current_time, busy_end)
+            
+            # Check for slot after last busy period
+            if current_time + duration_delta <= time_max:
+                slot_start = current_time
+                slot_end = slot_start + duration_delta
+                
+                if self._is_valid_slot(
+                    slot_start, slot_end,
+                    working_hours_start, working_hours_end,
+                    exclude_weekends, timezone
+                ):
+                    available_slots.append((slot_start, slot_end))
+            
+            return available_slots
+            
+        except Exception as error:
+            raise Exception(f"Failed to find available slots: {error}")
+    
+    def _is_valid_slot(
+        self,
+        start: datetime,
+        end: datetime,
+        working_hours_start: int,
+        working_hours_end: int,
+        exclude_weekends: bool,
+        timezone: str
+    ) -> bool:
+        """
+        Check if a time slot is valid based on constraints.
+        
+        Args:
+            start: Slot start time
+            end: Slot end time
+            working_hours_start: Start of working hours (0-23)
+            working_hours_end: End of working hours (0-23)
+            exclude_weekends: Whether to exclude weekends
+            timezone: Timezone string
+        
+        Returns:
+            True if slot is valid, False otherwise
+        """
+        # Check weekend exclusion
+        if exclude_weekends:
+            weekday = start.weekday()  # 0=Monday, 6=Sunday
+            if weekday >= 5:  # Saturday or Sunday
+                return False
+        
+        # Check working hours
+        # Note: This is a simplified check - assumes UTC or local time
+        # For proper timezone handling, would need pytz or zoneinfo
+        start_hour = start.hour
+        end_hour = end.hour
+        
+        # Slot must start at or after working hours start
+        # Slot must end at or before working hours end
+        if start_hour < working_hours_start:
+            return False
+        
+        # Check if end time is within working hours
+        # If end hour is same as start hour, check minutes
+        if end_hour > working_hours_end:
+            return False
+        elif end_hour == working_hours_end and end.minute > 0:
+            return False
+        
+        return True
     
     def get_calendar(self, calendar_id):
         """
