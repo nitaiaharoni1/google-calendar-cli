@@ -180,8 +180,13 @@ class CalendarAPI:
                             "timeZone": timezone,
                         }
             else:
-                # Default to now
-                now = datetime.utcnow()
+                # Default to now in user's timezone
+                from zoneinfo import ZoneInfo
+                try:
+                    tz = ZoneInfo(timezone)
+                    now = datetime.now(tz)
+                except Exception:
+                    now = datetime.utcnow()
                 event["start"] = {
                     "dateTime": now.isoformat(),
                     "timeZone": timezone,

@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="google-calendar-cli",
-    version="1.4.0",
+    version="1.5.0",
     author="Nitai Aharoni",
     description="Command-line interface for Google Calendar",
     long_description=long_description,

@@ -93,7 +93,7 @@ def parse_datetime(date_string):
 
 
 def format_datetime(dt, include_time=True):
-    """Format datetime for display."""
+    """Format datetime for display, converting to user's timezone."""
     if not dt:
         return ""
     
@@ -103,6 +103,18 @@ def format_datetime(dt, include_time=True):
     if not dt:
         return ""
     
+    # Convert to user's timezone if datetime is timezone-aware
+    if dt.tzinfo is not None:
+        from .config import get_preference
+        from zoneinfo import ZoneInfo
+        user_tz_str = get_preference('timezone', 'UTC')
+        try:
+            user_tz = ZoneInfo(user_tz_str)
+            dt = dt.astimezone(user_tz)
+        except Exception:
+            # If timezone conversion fails, use as-is
+            pass
+    
     if include_time:
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     else:
@@ -110,13 +122,29 @@ def format_datetime(dt, include_time=True):
 
 
 def get_today_start():
-    """Get start of today in UTC."""
-    now = datetime.utcnow()
-    return datetime(now.year, now.month, now.day)
+    """Get start of today in user's timezone, returned as UTC naive datetime for API compatibility."""
+    from .config import get_preference
+    from zoneinfo import ZoneInfo
+    from datetime import timezone as tz_module
+    
+    user_tz_str = get_preference('timezone', 'UTC')
+    try:
+        user_tz = ZoneInfo(user_tz_str)
+        # Get current time in user's timezone
+        now = datetime.now(user_tz)
+        # Get start of today in user's timezone
+        today_start_local = datetime(now.year, now.month, now.day, tzinfo=user_tz)
+        # Convert to UTC and return as naive datetime (API expects UTC)
+        today_start_utc = today_start_local.astimezone(tz_module.utc)
+        return today_start_utc.replace(tzinfo=None)
+    except Exception:
+        # Fallback to UTC
+        now = datetime.utcnow()
+        return datetime(now.year, now.month, now.day)
 
 
 def get_week_start():
-    """Get start of current week (Monday) in UTC."""
+    """Get start of current week (Monday) in user's timezone."""
     today = get_today_start()
     days_since_monday = today.weekday()
     return today - timedelta(days=days_since_monday)
