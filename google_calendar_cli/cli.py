@@ -19,7 +19,7 @@ from .history import add_operation, get_recent_operations, get_last_undoable_ope
 
 
 @click.group()
-@click.version_option(version="1.5.0")
+@click.version_option(version="1.6.0")
 @click.option("--account", "-a", help="Account name to use (default: current default account or GOOGLE_CALENDAR_ACCOUNT env var)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose/debug logging")
 @click.pass_context
