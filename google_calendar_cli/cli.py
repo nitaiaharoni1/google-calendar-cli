@@ -811,7 +811,31 @@ def get(ctx, event_id, calendar, account):
             click.echo(f"   Description: {event.get('description')}")
         
         if event.get("attendees"):
-            click.echo(f"   Attendees: {len(event.get('attendees', []))}")
+            attendees = event.get('attendees', [])
+            click.echo(f"   Attendees: {len(attendees)}")
+            for attendee in attendees:
+                email = attendee.get('email', 'N/A')
+                display_name = attendee.get('displayName', '')
+                response_status = attendee.get('responseStatus', 'needsAction')
+                organizer = attendee.get('organizer', False)
+                
+                # Format response status with icon
+                status_icons = {
+                    'accepted': '✓',
+                    'declined': '✗',
+                    'tentative': '?',
+                    'needsAction': '○'
+                }
+                status_icon = status_icons.get(response_status, '○')
+                
+                # Build attendee line
+                attendee_line = f"     {status_icon} {email}"
+                if display_name:
+                    attendee_line += f" ({display_name})"
+                if organizer:
+                    attendee_line += " [Organizer]"
+                
+                click.echo(attendee_line)
     
     except Exception as e:
         click.echo(f"❌ Error: {e}", err=True)
