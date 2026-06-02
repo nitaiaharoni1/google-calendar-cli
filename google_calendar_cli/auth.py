@@ -13,10 +13,11 @@ from .shared_auth import (
 )
 
 
-# Google Calendar API scopes
+# Google Calendar API scope. Full calendar access supports events AND calendar
+# management, and matches the unified token written by google-auth-core (robust
+# against OAuth scope normalization).
 SCOPES = [
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
 ]
 
 
