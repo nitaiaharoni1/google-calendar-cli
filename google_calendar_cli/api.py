@@ -388,6 +388,52 @@ class CalendarAPI:
             raise Exception(f"Failed to update event: {error}")
     
     @with_retry()
+    def respond_to_event(self, event_id, response, calendar_id="primary", send_updates="all"):
+        """
+        Set the authenticated user's RSVP status on an event they're invited to.
+
+        Args:
+            event_id: The event ID
+            response: RSVP status ('accepted', 'declined', 'tentative', 'needsAction')
+            calendar_id: Calendar ID (default: 'primary')
+            send_updates: Whether to send updates ('all', 'externalOnly', 'none')
+        """
+        valid_responses = {"accepted", "declined", "tentative", "needsAction"}
+        if response not in valid_responses:
+            raise ValueError(f"response must be one of {sorted(valid_responses)}")
+
+        try:
+            event = (
+                self.service.events()
+                .get(calendarId=calendar_id, eventId=event_id)
+                .execute()
+            )
+
+            # Find the attendee representing the current user (marked with "self": true)
+            self_attendee = next(
+                (att for att in event.get("attendees", []) if att.get("self") is True),
+                None
+            )
+            if self_attendee is None:
+                raise Exception("you are not an attendee of this event")
+
+            self_attendee["responseStatus"] = response
+
+            updated_event = (
+                self.service.events()
+                .patch(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    body={"attendees": event["attendees"]},
+                    sendUpdates=send_updates
+                )
+                .execute()
+            )
+            return updated_event
+        except HttpError as error:
+            raise Exception(f"Failed to respond to event: {error}")
+
+    @with_retry()
     def delete_event(self, event_id, calendar_id="primary"):
         """
         Delete an event.
