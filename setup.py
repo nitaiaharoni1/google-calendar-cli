@@ -12,7 +12,7 @@ setup(
     description="Command-line interface for Google Calendar",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/nitaiaharoni/google-calendar-cli",
+    url="https://github.com/nitaiaharoni1/google-calendar-cli",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
