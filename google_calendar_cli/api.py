@@ -63,6 +63,21 @@ class CalendarAPI:
             return calendars
         except HttpError as error:
             raise Exception(f"Failed to list calendars: {error}")
+
+    @with_retry()
+    def list_calendars_page(self, page_token=None):
+        """List all calendars with pagination cursor."""
+        try:
+            params = {}
+            if page_token:
+                params["pageToken"] = page_token
+            calendar_list = self.service.calendarList().list(**params).execute()
+            out = {"items": calendar_list.get("items", [])}
+            if calendar_list.get("nextPageToken"):
+                out["nextPageToken"] = calendar_list["nextPageToken"]
+            return out
+        except HttpError as error:
+            raise Exception(f"Failed to list calendars: {error}")
     
     @with_retry()
     def list_events(
@@ -106,6 +121,43 @@ class CalendarAPI:
             events_result = self.service.events().list(**params).execute()
             events = events_result.get("items", [])
             return events
+        except HttpError as error:
+            raise Exception(f"Failed to list events: {error}")
+
+    @with_retry()
+    def list_events_page(
+        self,
+        calendar_id="primary",
+        max_results=10,
+        time_min=None,
+        time_max=None,
+        single_events=True,
+        order_by="startTime",
+        page_token=None,
+    ):
+        """List events from a calendar with pagination cursor."""
+        try:
+            params = {
+                "calendarId": calendar_id,
+                "maxResults": max_results,
+                "singleEvents": single_events,
+                "orderBy": order_by,
+            }
+            if time_min:
+                if isinstance(time_min, datetime):
+                    time_min = time_min.isoformat() + "Z"
+                params["timeMin"] = time_min
+            if time_max:
+                if isinstance(time_max, datetime):
+                    time_max = time_max.isoformat() + "Z"
+                params["timeMax"] = time_max
+            if page_token:
+                params["pageToken"] = page_token
+            events_result = self.service.events().list(**params).execute()
+            out = {"items": events_result.get("items", [])}
+            if events_result.get("nextPageToken"):
+                out["nextPageToken"] = events_result["nextPageToken"]
+            return out
         except HttpError as error:
             raise Exception(f"Failed to list events: {error}")
     
@@ -503,6 +555,24 @@ class CalendarAPI:
             return instances.get("items", [])
         except HttpError as error:
             raise Exception(f"Failed to get recurring event instances: {error}")
+
+    def instances_page(self, event_id, calendar_id="primary", max_results=250, page_token=None):
+        """Get instances of a recurring event with pagination cursor."""
+        try:
+            params = {
+                "calendarId": calendar_id,
+                "eventId": event_id,
+                "maxResults": max_results,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            instances = self.service.events().instances(**params).execute()
+            out = {"items": instances.get("items", [])}
+            if instances.get("nextPageToken"):
+                out["nextPageToken"] = instances["nextPageToken"]
+            return out
+        except HttpError as error:
+            raise Exception(f"Failed to get recurring event instances: {error}")
     
     def search_events(self, query, calendar_id="primary", max_results=10):
         """
@@ -522,6 +592,26 @@ class CalendarAPI:
                 orderBy="startTime"
             ).execute()
             return events_result.get("items", [])
+        except HttpError as error:
+            raise Exception(f"Failed to search events: {error}")
+
+    def search_events_page(self, query, calendar_id="primary", max_results=10, page_token=None):
+        """Search events using a query string with pagination cursor."""
+        try:
+            params = {
+                "calendarId": calendar_id,
+                "q": query,
+                "maxResults": max_results,
+                "singleEvents": True,
+                "orderBy": "startTime",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            events_result = self.service.events().list(**params).execute()
+            out = {"items": events_result.get("items", [])}
+            if events_result.get("nextPageToken"):
+                out["nextPageToken"] = events_result["nextPageToken"]
+            return out
         except HttpError as error:
             raise Exception(f"Failed to search events: {error}")
     
